@@ -24,7 +24,15 @@ app.get('/', (req, res) => {
 app.get('/api/video/:videoId', async (req, res) => {
   try {
     const videoInfo = await yt.getInfo(req.params.videoId);
-    res.json(videoInfo);
+    const simplifiedInfo = {
+      videoId: videoInfo.basic_info.id,
+      title: videoInfo.basic_info.title,
+      description: videoInfo.basic_info.description,
+      thumbnail: videoInfo.basic_info.thumbnail[0].url,
+      views: videoInfo.basic_info.view_count,
+      publishDate: videoInfo.basic_info.publish_date
+    };
+    res.json(simplifiedInfo);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -38,7 +46,12 @@ app.get('/api/search', async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
     const results = await yt.search(query);
-    res.json(results);
+    const simplifiedResults = results.videos.map(video => ({
+      videoId: video.id,
+      title: video.title,
+      thumbnail: video.thumbnails[0].url
+    }));
+    res.json(simplifiedResults);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
