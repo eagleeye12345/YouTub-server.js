@@ -23,16 +23,19 @@ app.get('/', (req, res) => {
 // Get channel info endpoint
 app.get('/api/channel/:channelId', async (req, res) => {
   try {
+    console.log('Fetching channel:', req.params.channelId);
     const channel = await yt.getChannel(req.params.channelId);
+    console.log('Channel response:', channel);
     const channelInfo = {
       id: channel.info.channel_id,
       title: channel.info.title,
       thumbnail: channel.info.thumbnail[0].url,
       banner: channel.info.banner?.desktop[0]?.url,
-      uploadPlaylistId: channel.info.content.upload_playlist_id
+      uploadPlaylistId: channel.info.content?.upload_playlist_id
     };
     res.json(channelInfo);
   } catch (error) {
+    console.error('Channel error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -69,4 +72,31 @@ app.get('/api/search', async (req, res) => {
       videoId: video.id,
       title: video.title,
       thumbnail: video.thumbnails[0].url
-    
+    }));
+    res.json(simplifiedResults);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get playlist videos endpoint
+app.get('/api/playlist/:playlistId', async (req, res) => {
+  try {
+    const playlist = await yt.getPlaylist(req.params.playlistId);
+    const videos = playlist.videos.map(video => ({
+      videoId: video.id,
+      title: video.title,
+      thumbnail: video.thumbnails[0].url,
+      publishDate: video.published,
+      description: video.description,
+      views: video.view_count
+    }));
+    res.json(videos);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+}); 
