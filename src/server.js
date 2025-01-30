@@ -170,31 +170,28 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         
         // Get initial videos tab
         let videosTab = await channel.getVideos();
+        console.log('Initial videos tab data received');
         
-        // Skip videos for previous pages
-        const skipCount = (page - 1) * limit;
-        let processedCount = 0;
+        let currentPage = 1;
         let currentBatch = videosTab;
         
         // Skip to the requested page
-        while (processedCount < skipCount && currentBatch?.videos?.length) {
-            processedCount += currentBatch.videos.length;
-            if (processedCount < skipCount && currentBatch.has_continuation) {
-                currentBatch = await currentBatch.getContinuation();
-            }
+        while (currentPage < page && currentBatch?.has_continuation) {
+            console.log(`Skipping page ${currentPage}, getting next batch...`);
+            currentBatch = await currentBatch.getContinuation();
+            currentPage++;
         }
         
-        // Process the requested page
+        // Process the current page
         if (currentBatch?.videos?.length) {
-            const startIndex = Math.max(0, skipCount - (processedCount - currentBatch.videos.length));
-            const endIndex = Math.min(startIndex + limit, currentBatch.videos.length);
+            console.log(`Processing ${currentBatch.videos.length} videos for page ${page}`);
             
-            for (let i = startIndex; i < endIndex; i++) {
-                const video = currentBatch.videos[i];
+            for (const video of currentBatch.videos) {
                 try {
                     const videoInfo = await yt.getInfo(video.id);
+                    console.log(`Processing video: ${video.id}`);
                     
-                    // Try different date sources in order of accuracy
+                    // Try to get the most accurate date
                     let publishDate;
                     
                     // Parse primary_info date if available
@@ -217,30 +214,7 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                         } else if (videoInfo.microformat?.publishDate) {
                             publishDate = videoInfo.microformat.publishDate;
                         } else if (video.published?.text) {
-                            // For relative dates, try to get a more accurate estimate
-                            const relativeDate = video.published.text;
-                            const yearMatch = relativeDate.match(/(\d+)\s+year/);
-                            
-                            if (yearMatch) {
-                                const yearsAgo = parseInt(yearMatch[1]);
-                                const currentDate = new Date();
-                                const estimatedYear = currentDate.getFullYear() - yearsAgo;
-                                
-                                // If we have month info in the relative date, use it
-                                const monthMatch = relativeDate.match(/(\d+)\s+month/);
-                                if (monthMatch) {
-                                    const monthsAgo = parseInt(monthMatch[1]);
-                                    const estimatedDate = new Date();
-                                    estimatedDate.setFullYear(estimatedYear);
-                                    estimatedDate.setMonth(estimatedDate.getMonth() - monthsAgo);
-                                    publishDate = estimatedDate.toISOString();
-                                } else {
-                                    // If no month info, use parseYouTubeDate as fallback
-                                    publishDate = parseYouTubeDate(relativeDate);
-                                }
-                            } else {
-                                publishDate = parseYouTubeDate(relativeDate);
-                            }
+                            publishDate = parseYouTubeDate(video.published.text);
                         } else {
                             console.warn(`No publish date found for video ${video.id}`);
                             publishDate = new Date().toISOString();
@@ -249,33 +223,17 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
 
                     console.log(`Final parsed date for video ${video.id}: ${publishDate}`);
                     
-                    // Get description from multiple possible locations
-                    let description = '';
-                    if (videoInfo.primary_info?.description?.text) {
-                        description = videoInfo.primary_info.description.text;
-                    } else if (videoInfo.secondary_info?.description?.text) {
-                        description = videoInfo.secondary_info.description.text;
-                    } else if (videoInfo.basic_info?.description) {
-                        description = videoInfo.basic_info.description;
-                    } else if (video.description_snippet?.text) {
-                        description = video.description_snippet.text;
-                    }
-                    
-                    // Parse view count
-                    let viewCount = '0';
-                    if (video.view_count?.text) {
-                        viewCount = video.view_count.text.replace(/[^0-9]/g, '');
-                    }
-                    
                     const videoData = {
                         video_id: video.id,
                         title: videoInfo.basic_info?.title || video.title?.text || '',
-                        description: description,
+                        description: videoInfo.primary_info?.description?.text || 
+                                   videoInfo.basic_info?.description || 
+                                   video.description_snippet?.text || '',
                         thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
                                      video.thumbnail?.[0]?.url ||
                                      `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
                         published_at: publishDate,
-                        views: viewCount,
+                        views: video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
                         channel_id: channel.metadata?.external_id || '',
                         channel_title: channel.metadata?.title || '',
                         duration: videoInfo.basic_info?.duration?.text || video.duration?.text || ''
@@ -283,6 +241,11 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     
                     videos.push(videoData);
                     console.log(`Added video ${videos.length}: ${videoData.video_id}`);
+                    
+                    // If we've reached the limit, stop processing more videos
+                    if (videos.length >= limit) {
+                        break;
+                    }
                 } catch (videoError) {
                     console.error(`Error processing video ${video.id}:`, videoError);
                     continue;
@@ -290,8 +253,18 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
             }
         }
 
+        // Add pagination metadata
+        const response = {
+            videos: videos,
+            pagination: {
+                page: page,
+                limit: limit,
+                has_more: currentBatch?.has_continuation || false
+            }
+        };
+
         console.log(`Returning ${videos.length} videos for page ${page}`);
-        res.json(videos);
+        res.json(response);
     } catch (error) {
         console.error('Channel videos error:', error);
         res.status(500).json({ error: error.message });
