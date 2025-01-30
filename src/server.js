@@ -17,8 +17,16 @@ async function initializeYouTube() {
     try {
         yt = await Innertube.create({
             generate_session_locally: true,
-            fetch: async (input, init) => {
-                const url = typeof input === 'string' ? input : input.url;
+            fetch: (input, init) => {
+                // Handle case where input is a Request object
+                const url = input instanceof Request ? input.url : 
+                           typeof input === 'string' ? input : 
+                           input?.url;
+                
+                if (!url) {
+                    throw new Error('Invalid URL in fetch request');
+                }
+
                 const options = {
                     ...init,
                     headers: {
@@ -26,13 +34,21 @@ async function initializeYouTube() {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                     }
                 };
-                return fetch(url, options);
-            }
+
+                return global.fetch(url, options);
+            },
+            cache: false,
+            retry_on_fail: true,
+            check_for_updates: false
         });
+        
         ytInitialized = true;
         console.log('YouTube client initialized successfully');
     } catch (error) {
         console.error('Failed to initialize YouTube client:', error);
+        if (error.cause) {
+            console.error('Cause:', error.cause);
+        }
         throw error;
     }
 }
@@ -251,6 +267,19 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// Add error handler for uncaught exceptions
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+    if (error.cause) {
+        console.error('Cause:', error.cause);
+    }
+});
+
+// Add error handler for unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 // Initialize YouTube client before starting the server
