@@ -15,7 +15,20 @@ let ytInitialized = false;
 
 async function initializeYouTube() {
     try {
-        yt = await Innertube.create();
+        yt = await Innertube.create({
+            generate_session_locally: true,
+            fetch: async (input, init) => {
+                const url = typeof input === 'string' ? input : input.url;
+                const options = {
+                    ...init,
+                    headers: {
+                        ...init?.headers,
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
+                };
+                return fetch(url, options);
+            }
+        });
         ytInitialized = true;
         console.log('YouTube client initialized successfully');
     } catch (error) {
@@ -142,32 +155,17 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         if (videosTab?.videos) {
             for (const video of videosTab.videos) {
                 try {
-                    // Create a proper watch request to get full video details
-                    const watchRequest = {
-                        videoId: video.id,
-                        params: '',
-                        racyCheckOk: true,
-                        contentCheckOk: true
-                    };
-
-                    // Get full video info using watch request
-                    const fullVideoInfo = await yt.getInfo(video.id, {
-                        ...watchRequest,
-                        disablePlayerResponse: false
-                    });
-
-                    console.log('Full video info for', video.id, ':', {
-                        title: fullVideoInfo.basic_info?.title,
-                        description_length: fullVideoInfo.basic_info?.description?.length
-                    });
-
+                    // Get basic video info first
+                    const videoInfo = await yt.getBasicInfo(video.id);
+                    console.log('Got basic info for video:', video.id);
+                    
                     // Get published date
                     let publishDate;
                     if (video.published?.text) {
                         publishDate = parseYouTubeDate(video.published.text);
                         console.log(`Video ${video.id} published ${video.published.text} -> ${publishDate}`);
-                    } else if (fullVideoInfo.basic_info?.published) {
-                        publishDate = parseYouTubeDate(fullVideoInfo.basic_info.published);
+                    } else if (videoInfo.basic_info?.published) {
+                        publishDate = parseYouTubeDate(videoInfo.basic_info.published);
                     } else {
                         publishDate = new Date().toISOString();
                     }
@@ -178,31 +176,23 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                         viewCount = video.view_count.text.replace(/[^0-9]/g, '');
                     }
 
-                    // Get description from the full video info
-                    const description = 
-                        fullVideoInfo.basic_info?.description || // Primary source
-                        fullVideoInfo.description || // Fallback 1
-                        video.description?.text || // Fallback 2
-                        ''; // Default empty
-
-                    if (!description) {
-                        console.warn(`No description found for video ${video.id}`);
-                    } else {
-                        console.log(`Found description for ${video.id}, length: ${description.length} chars`);
-                    }
+                    // Get description from video info
+                    const description = videoInfo.basic_info?.description || 
+                                      video.description?.text || 
+                                      '';
 
                     const videoData = {
                         video_id: video.id,
-                        title: fullVideoInfo.basic_info?.title || video.title?.text || '',
+                        title: videoInfo.basic_info?.title || video.title?.text || '',
                         description: description,
-                        thumbnail_url: fullVideoInfo.basic_info?.thumbnail?.[0]?.url || 
+                        thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
                                      video.thumbnail?.[0]?.url ||
                                      `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
                         published_at: publishDate,
                         views: viewCount,
                         channel_id: channel.metadata?.external_id || '',
                         channel_title: channel.metadata?.title || '',
-                        duration: fullVideoInfo.basic_info?.duration?.text || video.duration?.text || ''
+                        duration: videoInfo.basic_info?.duration?.text || video.duration?.text || ''
                     };
                     
                     videos.push(videoData);
@@ -214,7 +204,6 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     });
                 } catch (videoError) {
                     console.error(`Error processing video ${video.id}:`, videoError);
-                    console.error('Full error:', JSON.stringify(videoError, null, 2));
                     continue;
                 }
             }
