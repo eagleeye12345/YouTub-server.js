@@ -100,43 +100,54 @@ function parseYouTubeDate(dateStr) {
         }
 
         // Handle relative dates like "X years/months/weeks/days ago"
-        const now = new Date();
         const matches = dateStr.match(/(\d+)\s+(year|month|week|day|hour|minute|second)s?\s+ago/i);
         
         if (matches) {
             const amount = parseInt(matches[1]);
             const unit = matches[2].toLowerCase();
             
+            // Create a date object for the current time
+            const now = new Date();
+            const currentYear = now.getFullYear();
+            
+            // Calculate the actual year the video was published
+            const targetYear = currentYear - 1; // Subtract 1 because we're already in 2024
+            
             switch (unit) {
                 case 'year':
-                    now.setFullYear(now.getFullYear() - amount);
-                    break;
+                    // Set to January 1st of the target year
+                    return new Date(targetYear - amount, 0, 1).toISOString();
                 case 'month':
-                    now.setMonth(now.getMonth() - amount);
-                    break;
+                    const targetDate = new Date();
+                    targetDate.setFullYear(targetYear);
+                    targetDate.setMonth(targetDate.getMonth() - amount);
+                    targetDate.setHours(0, 0, 0, 0);
+                    return targetDate.toISOString();
                 case 'week':
-                    now.setDate(now.getDate() - (amount * 7));
-                    break;
+                    const weekDate = new Date();
+                    weekDate.setFullYear(targetYear);
+                    weekDate.setDate(weekDate.getDate() - (amount * 7));
+                    weekDate.setHours(0, 0, 0, 0);
+                    return weekDate.toISOString();
                 case 'day':
-                    now.setDate(now.getDate() - amount);
-                    break;
+                    const dayDate = new Date();
+                    dayDate.setFullYear(targetYear);
+                    dayDate.setDate(dayDate.getDate() - amount);
+                    dayDate.setHours(0, 0, 0, 0);
+                    return dayDate.toISOString();
                 case 'hour':
-                    now.setHours(now.getHours() - amount);
-                    break;
+                    const hourDate = new Date();
+                    hourDate.setHours(hourDate.getHours() - amount);
+                    return hourDate.toISOString();
                 case 'minute':
-                    now.setMinutes(now.getMinutes() - amount);
-                    break;
+                    const minuteDate = new Date();
+                    minuteDate.setMinutes(minuteDate.getMinutes() - amount);
+                    return minuteDate.toISOString();
                 case 'second':
-                    now.setSeconds(now.getSeconds() - amount);
-                    break;
+                    const secondDate = new Date();
+                    secondDate.setSeconds(secondDate.getSeconds() - amount);
+                    return secondDate.toISOString();
             }
-            
-            // Set time to midnight for older dates (more than a week old)
-            if (amount > 0 && ['year', 'month', 'week'].includes(unit)) {
-                now.setHours(0, 0, 0, 0);
-            }
-            
-            return now.toISOString();
         }
 
         // Try parsing as a regular date if not relative
