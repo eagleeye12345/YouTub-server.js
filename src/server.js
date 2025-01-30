@@ -138,41 +138,45 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         const videos = [];
         
         const videosTab = await channel.getVideos();
-        console.log('Videos tab data:', JSON.stringify(videosTab, null, 2));
         
         if (videosTab?.videos) {
             for (const video of videosTab.videos) {
                 try {
-                    // Get full video details using getInfo
-                    const videoDetails = await yt.getInfo(video.id);
+                    // Get full video details
+                    const videoDetails = await yt.getBasicInfo(video.id);
                     console.log('Fetching full info for video:', video.id);
+
+                    // Get the full video info for description
+                    const fullVideoInfo = await yt.getInfo(video.id);
+                    console.log('Video details:', fullVideoInfo.details);
                     
-                    // Get published date from video metadata
+                    // Get published date
                     let publishDate;
                     if (video.published?.text) {
                         publishDate = parseYouTubeDate(video.published.text);
                         console.log(`Video ${video.id} published ${video.published.text} -> ${publishDate}`);
                     } else if (videoDetails.basic_info?.published) {
                         publishDate = parseYouTubeDate(videoDetails.basic_info.published);
-                        console.log(`Video ${video.id} published (from info) ${videoDetails.basic_info.published} -> ${publishDate}`);
                     } else {
                         publishDate = new Date().toISOString();
-                        console.log(`Video ${video.id} no publish date found, using current time`);
                     }
-                    
+
                     // Parse view count
                     let viewCount = '0';
                     if (video.view_count?.text) {
                         viewCount = video.view_count.text.replace(/[^0-9]/g, '');
                     }
 
-                    // Get full description from video details
-                    const fullDescription = videoDetails.description || 
-                                          videoDetails.basic_info?.description || 
-                                          videoDetails.details?.description || 
-                                          video.description?.text || '';
-                                          
-                    console.log(`Full description for video ${video.id}:`, fullDescription);
+                    // Get full description from multiple possible sources
+                    const fullDescription = 
+                        fullVideoInfo.details?.short_description || // From VideoDetails
+                        fullVideoInfo.description || // Direct description
+                        fullVideoInfo.basic_info?.description || // From basic info
+                        fullVideoInfo.page_data?.description || // From page data
+                        video.description?.text || // From video object
+                        ''; // Fallback empty string
+
+                    console.log(`Full description found for video ${video.id}:`, fullDescription);
                     
                     const videoData = {
                         video_id: video.id,
@@ -192,11 +196,12 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     console.log('Added video data:', {
                         ...videoData,
                         description: videoData.description ? 
-                            `${videoData.description.substring(0, 100)}... (total length: ${videoData.description.length})` : 
+                            `${videoData.description.substring(0, 150)}... (${videoData.description.length} chars)` : 
                             'No description'
                     });
                 } catch (videoError) {
                     console.error(`Error processing video ${video.id}:`, videoError);
+                    console.error('Full error:', JSON.stringify(videoError, null, 2));
                     continue;
                 }
             }
