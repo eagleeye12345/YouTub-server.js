@@ -142,21 +142,32 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         if (videosTab?.videos) {
             for (const video of videosTab.videos) {
                 try {
-                    // Get full video details
-                    const videoDetails = await yt.getBasicInfo(video.id);
-                    console.log('Fetching full info for video:', video.id);
+                    // Create a proper watch request to get full video details
+                    const watchRequest = {
+                        videoId: video.id,
+                        params: '',
+                        racyCheckOk: true,
+                        contentCheckOk: true
+                    };
 
-                    // Get the full video info for description
-                    const fullVideoInfo = await yt.getInfo(video.id);
-                    console.log('Video details:', fullVideoInfo.details);
-                    
+                    // Get full video info using watch request
+                    const fullVideoInfo = await yt.getInfo(video.id, {
+                        ...watchRequest,
+                        disablePlayerResponse: false
+                    });
+
+                    console.log('Full video info for', video.id, ':', {
+                        title: fullVideoInfo.basic_info?.title,
+                        description_length: fullVideoInfo.basic_info?.description?.length
+                    });
+
                     // Get published date
                     let publishDate;
                     if (video.published?.text) {
                         publishDate = parseYouTubeDate(video.published.text);
                         console.log(`Video ${video.id} published ${video.published.text} -> ${publishDate}`);
-                    } else if (videoDetails.basic_info?.published) {
-                        publishDate = parseYouTubeDate(videoDetails.basic_info.published);
+                    } else if (fullVideoInfo.basic_info?.published) {
+                        publishDate = parseYouTubeDate(fullVideoInfo.basic_info.published);
                     } else {
                         publishDate = new Date().toISOString();
                     }
@@ -167,29 +178,31 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                         viewCount = video.view_count.text.replace(/[^0-9]/g, '');
                     }
 
-                    // Get full description from multiple possible sources
-                    const fullDescription = 
-                        fullVideoInfo.details?.short_description || // From VideoDetails
-                        fullVideoInfo.description || // Direct description
-                        fullVideoInfo.basic_info?.description || // From basic info
-                        fullVideoInfo.page_data?.description || // From page data
-                        video.description?.text || // From video object
-                        ''; // Fallback empty string
+                    // Get description from the full video info
+                    const description = 
+                        fullVideoInfo.basic_info?.description || // Primary source
+                        fullVideoInfo.description || // Fallback 1
+                        video.description?.text || // Fallback 2
+                        ''; // Default empty
 
-                    console.log(`Full description found for video ${video.id}:`, fullDescription);
-                    
+                    if (!description) {
+                        console.warn(`No description found for video ${video.id}`);
+                    } else {
+                        console.log(`Found description for ${video.id}, length: ${description.length} chars`);
+                    }
+
                     const videoData = {
                         video_id: video.id,
-                        title: videoDetails.basic_info?.title || video.title?.text || '',
-                        description: fullDescription,
-                        thumbnail_url: videoDetails.basic_info?.thumbnail?.[0]?.url || 
+                        title: fullVideoInfo.basic_info?.title || video.title?.text || '',
+                        description: description,
+                        thumbnail_url: fullVideoInfo.basic_info?.thumbnail?.[0]?.url || 
                                      video.thumbnail?.[0]?.url ||
                                      `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
                         published_at: publishDate,
                         views: viewCount,
                         channel_id: channel.metadata?.external_id || '',
                         channel_title: channel.metadata?.title || '',
-                        duration: videoDetails.basic_info?.duration?.text || video.duration?.text || ''
+                        duration: fullVideoInfo.basic_info?.duration?.text || video.duration?.text || ''
                     };
                     
                     videos.push(videoData);
