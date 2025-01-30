@@ -146,6 +146,18 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     const videoInfo = await yt.getInfo(video.id);
                     console.log('Video info for', video.id, ':', JSON.stringify(videoInfo.basic_info, null, 2));
                     
+                    // Get description from multiple possible locations
+                    let description = '';
+                    if (videoInfo.primary_info?.description?.text) {
+                        description = videoInfo.primary_info.description.text;
+                    } else if (videoInfo.secondary_info?.description?.text) {
+                        description = videoInfo.secondary_info.description.text;
+                    } else if (videoInfo.basic_info?.description) {
+                        description = videoInfo.basic_info.description;
+                    } else if (video.description_snippet?.text) {
+                        description = video.description_snippet.text;
+                    }
+                    
                     // Get published date from video metadata
                     let publishDate;
                     if (video.published?.text) {
@@ -168,7 +180,7 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     const videoData = {
                         video_id: video.id,
                         title: videoInfo.basic_info?.title || video.title?.text || '',
-                        description: videoInfo.basic_info?.description || video.description?.text || '',
+                        description: description,
                         thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
                                      video.thumbnail?.[0]?.url ||
                                      `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
