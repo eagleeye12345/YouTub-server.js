@@ -137,10 +137,11 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         const channel = await yt.getChannel(req.params.channelId);
         const videos = [];
         
-        const videosTab = await channel.getVideos();
-        console.log('Videos tab data:', JSON.stringify(videosTab, null, 2));
+        let videosTab = await channel.getVideos();
+        console.log('Initial videos tab data:', JSON.stringify(videosTab, null, 2));
         
-        if (videosTab?.videos) {
+        // Keep fetching videos while there are more available
+        while (videosTab?.videos) {
             for (const video of videosTab.videos) {
                 try {
                     const videoInfo = await yt.getInfo(video.id);
@@ -192,11 +193,20 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     };
                     
                     videos.push(videoData);
-                    console.log('Added video data:', videoData);
+                    console.log(`Added video data (${videos.length}):`, videoData);
                 } catch (videoError) {
                     console.error(`Error processing video ${video.id}:`, videoError);
                     continue;
                 }
+            }
+
+            // Check if there are more videos to load
+            if (videosTab.continuation) {
+                console.log('Loading more videos...');
+                videosTab = await videosTab.getContinuation();
+            } else {
+                console.log('No more videos to load');
+                break;
             }
         }
 
