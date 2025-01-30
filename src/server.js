@@ -143,8 +143,9 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         if (videosTab?.videos) {
             for (const video of videosTab.videos) {
                 try {
-                    const videoInfo = await yt.getInfo(video.id);
-                    console.log('Video info for', video.id, ':', JSON.stringify(videoInfo.basic_info, null, 2));
+                    // Get full video info
+                    const videoInfo = await yt.getBasicInfo(video.id);
+                    console.log('Fetching full info for video:', video.id);
                     
                     // Get published date from video metadata
                     let publishDate;
@@ -164,11 +165,24 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     if (video.view_count?.text) {
                         viewCount = video.view_count.text.replace(/[^0-9]/g, '');
                     }
+
+                    // Get full description
+                    let fullDescription = '';
+                    try {
+                        const detailedInfo = await yt.getInfo(video.id);
+                        fullDescription = detailedInfo.basic_info?.description || 
+                                        detailedInfo.description || 
+                                        video.description?.text || '';
+                        console.log(`Got full description for video ${video.id}, length: ${fullDescription.length} chars`);
+                    } catch (descError) {
+                        console.error(`Error getting description for ${video.id}:`, descError);
+                        fullDescription = video.description?.text || '';
+                    }
                     
                     const videoData = {
                         video_id: video.id,
                         title: videoInfo.basic_info?.title || video.title?.text || '',
-                        description: videoInfo.basic_info?.description || video.description?.text || '',
+                        description: fullDescription,
                         thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
                                      video.thumbnail?.[0]?.url ||
                                      `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
@@ -180,7 +194,10 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     };
                     
                     videos.push(videoData);
-                    console.log('Added video data:', videoData);
+                    console.log('Added video data:', {
+                        ...videoData,
+                        description: videoData.description.substring(0, 100) + '...' // Log truncated description
+                    });
                 } catch (videoError) {
                     console.error(`Error processing video ${video.id}:`, videoError);
                     continue;
