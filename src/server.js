@@ -89,6 +89,45 @@ app.get('/api/video/:videoId', async (req, res) => {
   }
 });
 
+// Helper function to convert relative time to timestamp
+function parseRelativeTime(relativeTime) {
+    if (!relativeTime) return new Date().toISOString();
+    
+    const now = new Date();
+    const matches = relativeTime.toLowerCase().match(/(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago/);
+    
+    if (!matches) return now.toISOString();
+    
+    const [_, amount, unit] = matches;
+    const value = parseInt(amount);
+    
+    switch (unit) {
+        case 'year':
+            now.setFullYear(now.getFullYear() - value);
+            break;
+        case 'month':
+            now.setMonth(now.getMonth() - value);
+            break;
+        case 'week':
+            now.setDate(now.getDate() - (value * 7));
+            break;
+        case 'day':
+            now.setDate(now.getDate() - value);
+            break;
+        case 'hour':
+            now.setHours(now.getHours() - value);
+            break;
+        case 'minute':
+            now.setMinutes(now.getMinutes() - value);
+            break;
+        case 'second':
+            now.setSeconds(now.getSeconds() - value);
+            break;
+    }
+    
+    return now.toISOString();
+}
+
 // Get channel videos endpoint
 app.get('/api/channel/:channelId/videos', async (req, res) => {
     try {
@@ -96,14 +135,12 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         const channel = await yt.getChannel(req.params.channelId);
         const videos = [];
         
-        // Get videos from channel's videos tab
         const videosTab = await channel.getVideos();
         console.log('Videos tab data:', JSON.stringify(videosTab, null, 2));
         
         if (videosTab?.videos) {
             for (const video of videosTab.videos) {
                 try {
-                    // Get detailed video info
                     const videoInfo = await yt.getInfo(video.id);
                     console.log('Video info for', video.id, ':', JSON.stringify(videoInfo.basic_info, null, 2));
                     
@@ -113,29 +150,9 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                         viewCount = video.view_count.text.replace(/[^0-9]/g, '');
                     }
                     
-                    // Parse date
-                    let publishDate = new Date().toISOString();
-                    if (videoInfo.basic_info?.published) {
-                        const publishText = videoInfo.basic_info.published;
-                        // Convert relative date to timestamp
-                        if (publishText.includes('ago')) {
-                            const now = new Date();
-                            if (publishText.includes('year')) {
-                                const years = parseInt(publishText);
-                                now.setFullYear(now.getFullYear() - years);
-                            } else if (publishText.includes('month')) {
-                                const months = parseInt(publishText);
-                                now.setMonth(now.getMonth() - months);
-                            } else if (publishText.includes('week')) {
-                                const weeks = parseInt(publishText);
-                                now.setDate(now.getDate() - (weeks * 7));
-                            } else if (publishText.includes('day')) {
-                                const days = parseInt(publishText);
-                                now.setDate(now.getDate() - days);
-                            }
-                            publishDate = now.toISOString();
-                        }
-                    }
+                    // Get published date
+                    const publishDate = parseRelativeTime(video.published?.text);
+                    console.log(`Original date: ${video.published?.text}, Parsed date: ${publishDate}`);
 
                     const videoData = {
                         video_id: video.id,
