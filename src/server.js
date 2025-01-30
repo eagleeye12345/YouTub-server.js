@@ -97,26 +97,32 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         
         // Get videos from channel's content tab
         const contents = channel.current_tab?.content?.contents || [];
+        console.log('Channel contents:', JSON.stringify(contents, null, 2));
         
         for (const item of contents) {
             if (item.type === 'Video' || item.type === 'GridVideo' || item.type === 'ReelItem') {
                 try {
                     // Fetch detailed video info
                     const videoInfo = await yt.getInfo(item.id);
-                    videos.push({
+                    console.log('Video info:', JSON.stringify(videoInfo.basic_info, null, 2));
+                    
+                    // Add null checks for all properties
+                    const videoData = {
                         video_id: item.id,
-                        title: videoInfo.basic_info.title,
-                        description: videoInfo.basic_info.description,
-                        thumbnail_url: videoInfo.basic_info.thumbnail[0].url,
-                        published_at: videoInfo.basic_info.published.text,
-                        views: videoInfo.basic_info.view_count.toString(),
-                        channel_id: channel.metadata.external_id,
-                        channel_title: channel.metadata.title,
-                        duration: videoInfo.basic_info.duration.text
-                    });
+                        title: videoInfo.basic_info?.title || '',
+                        description: videoInfo.basic_info?.description || '',
+                        thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || '',
+                        published_at: videoInfo.basic_info?.published?.text || new Date().toISOString(),
+                        views: String(videoInfo.basic_info?.view_count || 0),
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        duration: videoInfo.basic_info?.duration?.text || ''
+                    };
+                    
+                    videos.push(videoData);
+                    console.log('Added video:', videoData);
                 } catch (videoError) {
                     console.error(`Error fetching video ${item.id}:`, videoError);
-                    // Continue with next video if one fails
                     continue;
                 }
             }
@@ -124,22 +130,34 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
 
         // If we got no videos from the first method, try the videos tab
         if (videos.length === 0) {
+            console.log('No videos found in contents, trying videos tab...');
             const videosTab = await channel.getVideos();
-            for (const video of videosTab.videos) {
-                videos.push({
-                    video_id: video.id,
-                    title: video.title.text,
-                    description: video.description?.text || '',
-                    thumbnail_url: video.thumbnail[0].url,
-                    published_at: video.published?.text || '',
-                    views: video.view_count?.text || '0',
-                    channel_id: channel.metadata.external_id,
-                    channel_title: channel.metadata.title,
-                    duration: video.duration?.text || ''
-                });
+            console.log('Videos tab:', JSON.stringify(videosTab, null, 2));
+            
+            if (videosTab?.videos) {
+                for (const video of videosTab.videos) {
+                    try {
+                        const videoData = {
+                            video_id: video.id,
+                            title: video.title?.text || '',
+                            description: video.description?.text || '',
+                            thumbnail_url: video.thumbnail?.[0]?.url || '',
+                            published_at: video.published?.text || new Date().toISOString(),
+                            views: String(video.view_count?.text || 0),
+                            channel_id: channel.metadata?.external_id || '',
+                            channel_title: channel.metadata?.title || '',
+                            duration: video.duration?.text || ''
+                        };
+                        videos.push(videoData);
+                        console.log('Added video from tab:', videoData);
+                    } catch (error) {
+                        console.error('Error processing video:', error);
+                    }
+                }
             }
         }
 
+        console.log(`Total videos found: ${videos.length}`);
         res.json(videos);
     } catch (error) {
         console.error('Channel videos error:', error);
