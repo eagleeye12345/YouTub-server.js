@@ -177,59 +177,60 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                 try {
                     const videoInfo = await yt.getInfo(video.id);
                     
-                    // Try to get the most accurate date possible
+                    // Try different date sources in order of accuracy
                     let publishDate;
                     
-                    // Log all possible date sources for debugging
-                    console.log('Date sources for video', video.id, ':', {
-                        basic_info_date: videoInfo.basic_info?.publish_date,
-                        published_time: videoInfo.published_time?.text,
-                        video_published: video.published?.text,
-                        primary_info: videoInfo.primary_info?.published?.text,
-                        metadata_date: videoInfo.metadata?.publishDate,
-                        microformat_date: videoInfo.microformat?.publishDate
-                    });
-
-                    // Try different date sources in order of accuracy
-                    if (videoInfo.basic_info?.publish_date && !videoInfo.basic_info.publish_date.includes('ago')) {
-                        publishDate = videoInfo.basic_info.publish_date;
-                    } else if (videoInfo.metadata?.publishDate) {
-                        publishDate = videoInfo.metadata.publishDate;
-                    } else if (videoInfo.microformat?.publishDate) {
-                        publishDate = videoInfo.microformat.publishDate;
-                    } else if (video.published?.text) {
-                        // For relative dates, try to get a more accurate estimate
-                        const relativeDate = video.published.text;
-                        const yearMatch = relativeDate.match(/(\d+)\s+year/);
-                        
-                        if (yearMatch) {
-                            const yearsAgo = parseInt(yearMatch[1]);
-                            const currentDate = new Date();
-                            const estimatedYear = currentDate.getFullYear() - yearsAgo;
-                            
-                            // If we have month info in the relative date, use it
-                            const monthMatch = relativeDate.match(/(\d+)\s+month/);
-                            if (monthMatch) {
-                                const monthsAgo = parseInt(monthMatch[1]);
-                                const estimatedDate = new Date();
-                                estimatedDate.setFullYear(estimatedYear);
-                                estimatedDate.setMonth(estimatedDate.getMonth() - monthsAgo);
-                                publishDate = estimatedDate.toISOString();
-                            } else {
-                                // If no month info, use the current month/day
-                                const estimatedDate = new Date();
-                                estimatedDate.setFullYear(estimatedYear);
-                                publishDate = estimatedDate.toISOString();
-                            }
-                        } else {
-                            publishDate = parseYouTubeDate(relativeDate);
+                    // Parse primary_info date if available
+                    if (videoInfo.primary_info?.published?.text) {
+                        const primaryInfoDate = videoInfo.primary_info.published.text;
+                        // Remove "Premiered" prefix if present
+                        const cleanDate = primaryInfoDate.replace(/^Premiered\s+/, '');
+                        const parsedDate = new Date(cleanDate);
+                        if (!isNaN(parsedDate.getTime())) {
+                            publishDate = parsedDate.toISOString();
                         }
-                    } else {
-                        console.warn(`No publish date found for video ${video.id}`);
-                        publishDate = new Date().toISOString();
                     }
 
-                    console.log(`Parsing date from: ${video.published?.text} -> ${publishDate}`);
+                    // Fallback to other sources if primary_info date parsing failed
+                    if (!publishDate) {
+                        if (videoInfo.basic_info?.publish_date && !videoInfo.basic_info.publish_date.includes('ago')) {
+                            publishDate = videoInfo.basic_info.publish_date;
+                        } else if (videoInfo.metadata?.publishDate) {
+                            publishDate = videoInfo.metadata.publishDate;
+                        } else if (videoInfo.microformat?.publishDate) {
+                            publishDate = videoInfo.microformat.publishDate;
+                        } else if (video.published?.text) {
+                            // For relative dates, try to get a more accurate estimate
+                            const relativeDate = video.published.text;
+                            const yearMatch = relativeDate.match(/(\d+)\s+year/);
+                            
+                            if (yearMatch) {
+                                const yearsAgo = parseInt(yearMatch[1]);
+                                const currentDate = new Date();
+                                const estimatedYear = currentDate.getFullYear() - yearsAgo;
+                                
+                                // If we have month info in the relative date, use it
+                                const monthMatch = relativeDate.match(/(\d+)\s+month/);
+                                if (monthMatch) {
+                                    const monthsAgo = parseInt(monthMatch[1]);
+                                    const estimatedDate = new Date();
+                                    estimatedDate.setFullYear(estimatedYear);
+                                    estimatedDate.setMonth(estimatedDate.getMonth() - monthsAgo);
+                                    publishDate = estimatedDate.toISOString();
+                                } else {
+                                    // If no month info, use parseYouTubeDate as fallback
+                                    publishDate = parseYouTubeDate(relativeDate);
+                                }
+                            } else {
+                                publishDate = parseYouTubeDate(relativeDate);
+                            }
+                        } else {
+                            console.warn(`No publish date found for video ${video.id}`);
+                            publishDate = new Date().toISOString();
+                        }
+                    }
+
+                    console.log(`Final parsed date for video ${video.id}: ${publishDate}`);
                     
                     // Get description from multiple possible locations
                     let description = '';
