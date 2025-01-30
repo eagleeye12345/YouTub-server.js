@@ -338,6 +338,75 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
   }
 });
 
+// Get shorts info endpoint
+app.get('/api/shorts/:videoId', async (req, res) => {
+  try {
+    const shortsInfo = await yt.getShortsVideoInfo(req.params.videoId);
+    const simplifiedInfo = {
+      video_id: shortsInfo.basic_info?.id,
+      title: shortsInfo.basic_info?.title,
+      description: shortsInfo.basic_info?.description,
+      thumbnail_url: shortsInfo.basic_info?.thumbnail?.[0]?.url,
+      views: shortsInfo.basic_info?.view_count,
+      published_at: shortsInfo.basic_info?.publish_date,
+      channel_id: shortsInfo.basic_info?.channel?.id,
+      channel_title: shortsInfo.basic_info?.channel?.name,
+      channel_thumbnail: shortsInfo.basic_info?.channel?.thumbnails?.[0]?.url,
+      duration: shortsInfo.basic_info?.duration?.text
+    };
+    res.json(simplifiedInfo);
+  } catch (error) {
+    console.error('Shorts error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get channel shorts endpoint
+app.get('/api/channel/:channelId/shorts', async (req, res) => {
+  try {
+    console.log('Fetching channel shorts:', req.params.channelId);
+    const channel = await yt.getChannel(req.params.channelId);
+    
+    // Get shorts tab
+    const shortsTab = await channel.getShorts();
+    const shorts = [];
+    
+    if (shortsTab?.videos?.length) {
+      for (const short of shortsTab.videos) {
+        try {
+          const shortInfo = await yt.getShortsVideoInfo(short.id);
+          
+          const shortData = {
+            video_id: short.id,
+            title: shortInfo.basic_info?.title || short.title?.text || '',
+            description: shortInfo.basic_info?.description || short.description_snippet?.text || '',
+            thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
+                         short.thumbnail?.[0]?.url ||
+                         `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+            published_at: shortInfo.basic_info?.publish_date || short.published?.text || '',
+            views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+            channel_id: channel.metadata?.external_id || '',
+            channel_title: channel.metadata?.title || '',
+            duration: shortInfo.basic_info?.duration?.text || short.duration?.text || ''
+          };
+          
+          shorts.push(shortData);
+          console.log(`Added short ${shorts.length}: ${shortData.video_id}`);
+        } catch (shortError) {
+          console.error(`Error processing short ${short.id}:`, shortError);
+          continue;
+        }
+      }
+    }
+
+    console.log(`Total shorts found: ${shorts.length}`);
+    res.json(shorts);
+  } catch (error) {
+    console.error('Channel shorts error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
     app.listen(port, () => {
