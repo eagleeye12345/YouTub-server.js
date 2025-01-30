@@ -106,48 +106,42 @@ function parseYouTubeDate(dateStr) {
             const amount = parseInt(matches[1]);
             const unit = matches[2].toLowerCase();
             
-            // Create a date object for the current time
+            // Get current date
             const now = new Date();
-            const currentYear = now.getFullYear();
             
-            // Calculate the actual year the video was published
-            const targetYear = currentYear - 1; // Subtract 1 because we're already in 2024
+            // For years ago, try to get the actual publish date from the video info
+            if (unit === 'year') {
+                const year = now.getFullYear() - amount;
+                // Set to middle of the year if exact date unknown
+                // This gives a more reasonable estimate than January 1st
+                return new Date(year, 6, 1).toISOString();
+            }
+            
+            // For all other units, calculate from current date
+            const date = new Date();
             
             switch (unit) {
-                case 'year':
-                    // Set to January 1st of the target year
-                    return new Date(targetYear - amount, 0, 1).toISOString();
                 case 'month':
-                    const targetDate = new Date();
-                    targetDate.setFullYear(targetYear);
-                    targetDate.setMonth(targetDate.getMonth() - amount);
-                    targetDate.setHours(0, 0, 0, 0);
-                    return targetDate.toISOString();
+                    date.setMonth(date.getMonth() - amount);
+                    break;
                 case 'week':
-                    const weekDate = new Date();
-                    weekDate.setFullYear(targetYear);
-                    weekDate.setDate(weekDate.getDate() - (amount * 7));
-                    weekDate.setHours(0, 0, 0, 0);
-                    return weekDate.toISOString();
+                    date.setDate(date.getDate() - (amount * 7));
+                    break;
                 case 'day':
-                    const dayDate = new Date();
-                    dayDate.setFullYear(targetYear);
-                    dayDate.setDate(dayDate.getDate() - amount);
-                    dayDate.setHours(0, 0, 0, 0);
-                    return dayDate.toISOString();
+                    date.setDate(date.getDate() - amount);
+                    break;
                 case 'hour':
-                    const hourDate = new Date();
-                    hourDate.setHours(hourDate.getHours() - amount);
-                    return hourDate.toISOString();
+                    date.setHours(date.getHours() - amount);
+                    break;
                 case 'minute':
-                    const minuteDate = new Date();
-                    minuteDate.setMinutes(minuteDate.getMinutes() - amount);
-                    return minuteDate.toISOString();
+                    date.setMinutes(date.getMinutes() - amount);
+                    break;
                 case 'second':
-                    const secondDate = new Date();
-                    secondDate.setSeconds(secondDate.getSeconds() - amount);
-                    return secondDate.toISOString();
+                    date.setSeconds(date.getSeconds() - amount);
+                    break;
             }
+            
+            return date.toISOString();
         }
 
         // Try parsing as a regular date if not relative
@@ -181,22 +175,23 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
             
             for (const video of videosTab.videos) {
                 try {
+                    // Get detailed video info to get more accurate dates
                     const videoInfo = await yt.getInfo(video.id);
                     
-                    // Get published date with better handling
+                    // Try to get the most accurate date possible
                     let publishDate;
                     if (videoInfo.basic_info?.publish_date) {
-                        publishDate = parseYouTubeDate(videoInfo.basic_info.publish_date);
+                        publishDate = videoInfo.basic_info.publish_date;
+                    } else if (videoInfo.published_time?.text) {
+                        publishDate = videoInfo.published_time.text;
                     } else if (video.published?.text) {
                         publishDate = parseYouTubeDate(video.published.text);
-                    } else if (videoInfo.primary_info?.published?.text) {
-                        publishDate = parseYouTubeDate(videoInfo.primary_info.published.text);
                     } else {
                         console.warn(`No publish date found for video ${video.id}`);
                         publishDate = new Date().toISOString();
                     }
 
-                    console.log(`Parsing date from: ${video.published?.text || videoInfo.basic_info?.publish_date} -> ${publishDate}`);
+                    console.log(`Parsing date from: ${video.published?.text} -> ${publishDate}`);
                     
                     // Get description from multiple possible locations
                     let description = '';
