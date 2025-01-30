@@ -15,31 +15,45 @@ let ytInitialized = false;
 
 async function initializeYouTube() {
     try {
+        console.log('Starting YouTube client initialization...');
+        
         yt = await Innertube.create({
             generate_session_locally: true,
             fetch: (input, init) => {
-                // Handle case where input is a Request object
-                const url = input instanceof Request ? input.url : 
-                           typeof input === 'string' ? input : 
-                           input?.url;
-                
-                if (!url) {
-                    throw new Error('Invalid URL in fetch request');
-                }
+                try {
+                    // Log the incoming request
+                    console.log('Fetch request:', {
+                        input: typeof input === 'string' ? input : input?.url,
+                        method: init?.method,
+                        headers: init?.headers
+                    });
 
-                const options = {
-                    ...init,
-                    headers: {
-                        ...init?.headers,
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    // If input is a string URL, use it directly
+                    if (typeof input === 'string') {
+                        return fetch(input, init);
                     }
-                };
 
-                return global.fetch(url, options);
+                    // If input is a Request object, use its URL
+                    if (input instanceof Request) {
+                        return fetch(input.url, init);
+                    }
+
+                    // If input is an object with a url property
+                    if (input && typeof input === 'object' && input.url) {
+                        return fetch(input.url, init);
+                    }
+
+                    // Default YouTube API URL if none provided
+                    const defaultUrl = 'https://www.youtube.com';
+                    console.log('Using default URL:', defaultUrl);
+                    return fetch(defaultUrl, init);
+
+                } catch (error) {
+                    console.error('Fetch error:', error);
+                    throw error;
+                }
             },
-            cache: false,
-            retry_on_fail: true,
-            check_for_updates: false
+            cache: false
         });
         
         ytInitialized = true;
