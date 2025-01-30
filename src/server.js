@@ -174,12 +174,34 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         
         let currentPage = 1;
         let currentBatch = videosTab;
+        let continuationAttempts = 0;
+        const MAX_CONTINUATION_ATTEMPTS = 3;
         
         // Skip to the requested page
         while (currentPage < page && currentBatch?.has_continuation) {
             console.log(`Skipping page ${currentPage}, getting next batch...`);
-            currentBatch = await currentBatch.getContinuation();
-            currentPage++;
+            try {
+                const nextBatch = await currentBatch.getContinuation();
+                if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
+                    console.log('No more videos in continuation');
+                    break;
+                }
+                currentBatch = nextBatch;
+                currentPage++;
+                continuationAttempts = 0; // Reset attempts on successful continuation
+            } catch (continuationError) {
+                console.error(`Continuation error on page ${currentPage}:`, continuationError);
+                continuationAttempts++;
+                
+                if (continuationAttempts >= MAX_CONTINUATION_ATTEMPTS) {
+                    console.error(`Failed to get continuation after ${MAX_CONTINUATION_ATTEMPTS} attempts`);
+                    break;
+                }
+                
+                // Wait before retrying
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                continue;
+            }
         }
         
         // Process the current page
@@ -188,8 +210,8 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
             
             for (const video of currentBatch.videos) {
                 try {
+                    console.log(`Fetching info for video: ${video.id}`);
                     const videoInfo = await yt.getInfo(video.id);
-                    console.log(`Processing video: ${video.id}`);
                     
                     // Try to get the most accurate date
                     let publishDate;
@@ -246,11 +268,28 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     if (videos.length >= limit) {
                         break;
                     }
+
+                    // Add a small delay between video info requests
+                    await new Promise(resolve => setTimeout(resolve, 100));
                 } catch (videoError) {
                     console.error(`Error processing video ${video.id}:`, videoError);
                     continue;
                 }
             }
+        }
+
+        // Check if there are actually more videos
+        let hasMore = false;
+        try {
+            if (currentBatch?.has_continuation) {
+                // Try to peek at the next batch
+                const nextBatch = await currentBatch.getContinuation();
+                hasMore = !!(nextBatch?.videos?.length);
+            }
+        } catch (error) {
+            console.error('Error checking for more videos:', error);
+            // Assume there might be more if we can't check
+            hasMore = currentBatch?.has_continuation || false;
         }
 
         // Add pagination metadata
@@ -259,11 +298,12 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
             pagination: {
                 page: page,
                 limit: limit,
-                has_more: currentBatch?.has_continuation || false
+                has_more: hasMore,
+                current_page_size: videos.length
             }
         };
 
-        console.log(`Returning ${videos.length} videos for page ${page}`);
+        console.log(`Returning ${videos.length} videos for page ${page} (has_more: ${hasMore})`);
         res.json(response);
     } catch (error) {
         console.error('Channel videos error:', error);
