@@ -10,36 +10,60 @@ app.use(cors());
 app.use(express.json());
 
 // Initialize YouTube client
-let yt;
-(async () => {
-  yt = await Innertube.create();
-})();
+let yt = null;
+let ytInitialized = false;
+
+async function initializeYouTube() {
+    try {
+        yt = await Innertube.create();
+        ytInitialized = true;
+        console.log('YouTube client initialized successfully');
+    } catch (error) {
+        console.error('Failed to initialize YouTube client:', error);
+        throw error;
+    }
+}
+
+// Middleware to check if YouTube client is initialized
+const checkYouTubeClient = async (req, res, next) => {
+    if (!ytInitialized) {
+        try {
+            await initializeYouTube();
+        } catch (error) {
+            return res.status(500).json({ error: 'YouTube client not initialized' });
+        }
+    }
+    next();
+};
+
+// Apply the middleware to all routes except health check
+app.use('/api/*', checkYouTubeClient);
 
 // Basic health check endpoint
 app.get('/', (req, res) => {
-  res.json({ status: 'YouTube API service is running' });
+    res.json({ status: 'YouTube API service is running' });
 });
 
 // Get channel info endpoint
 app.get('/api/channel/:channelId', async (req, res) => {
-  try {
-    const channel = await yt.getChannel(req.params.channelId);
-    console.log('Channel response:', channel); // For debugging
+    try {
+        console.log('Fetching channel:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Extract channel info from metadata
+        const channelInfo = {
+            id: channel.metadata?.external_id,
+            title: channel.metadata?.title,
+            thumbnail_url: channel.metadata?.avatar?.[0]?.url,
+            banner_url: channel.header?.content?.banner?.image?.url,
+            description: channel.metadata?.description
+        };
 
-    // Extract channel info from metadata
-    const channelInfo = {
-      id: channel.metadata.external_id,
-      title: channel.metadata.title,
-      thumbnail_url: channel.metadata.avatar?.[0]?.url,
-      banner_url: channel.header?.content?.banner?.image?.url,
-      description: channel.metadata.description
-    };
-
-    res.json(channelInfo);
-  } catch (error) {
-    console.error('Channel error:', error);
-    res.status(500).json({ error: error.message });
-  }
+        res.json(channelInfo);
+    } catch (error) {
+        console.error('Channel error:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // Get video info endpoint
@@ -125,6 +149,12 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+// Initialize YouTube client before starting the server
+initializeYouTube().then(() => {
+    app.listen(port, () => {
+        console.log(`Server running on port ${port}`);
+    });
+}).catch(error => {
+    console.error('Failed to start server:', error);
+    process.exit(1);
 }); 
