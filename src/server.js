@@ -162,149 +162,196 @@ function parseYouTubeDate(dateStr) {
 app.get('/api/channel/:channelId/videos', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 50;
+        const limit = parseInt(req.query.limit) || 30;
+        const type = req.query.type || 'videos'; // Add type parameter: 'videos' or 'shorts'
         
-        console.log(`Fetching channel: ${req.params.channelId} (page ${page}, limit ${limit})`);
+        console.log(`Fetching ${type} for channel:`, req.params.channelId, `(page ${page})`);
         const channel = await yt.getChannel(req.params.channelId);
-        const videos = [];
         
-        // Get initial videos tab
-        let videosTab = await channel.getVideos();
-        console.log('Initial videos tab data received');
+        let videos = [];
+        let hasMore = false;
         
-        let currentPage = 1;
-        let currentBatch = videosTab;
-        let continuationAttempts = 0;
-        const MAX_CONTINUATION_ATTEMPTS = 3;
-        
-        // Skip to the requested page
-        while (currentPage < page && currentBatch?.has_continuation) {
-            console.log(`Skipping page ${currentPage}, getting next batch...`);
-            try {
-                const nextBatch = await currentBatch.getContinuation();
-                if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
-                    console.log('No more videos in continuation');
-                    break;
-                }
-                currentBatch = nextBatch;
-                currentPage++;
-                continuationAttempts = 0; // Reset attempts on successful continuation
-            } catch (continuationError) {
-                console.error(`Continuation error on page ${currentPage}:`, continuationError);
-                continuationAttempts++;
-                
-                if (continuationAttempts >= MAX_CONTINUATION_ATTEMPTS) {
-                    console.error(`Failed to get continuation after ${MAX_CONTINUATION_ATTEMPTS} attempts`);
-                    break;
-                }
-                
-                // Wait before retrying
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                continue;
-            }
-        }
-        
-        // Process the current page
-        if (currentBatch?.videos?.length) {
-            console.log(`Processing ${currentBatch.videos.length} videos for page ${page}`);
+        if (type === 'shorts') {
+            // Get shorts tab specifically
+            let shortsTab = await channel.getShorts();
+            console.log('Initial shorts tab loaded');
             
-            for (const video of currentBatch.videos) {
+            if (!shortsTab?.videos) {
+                return res.json({ 
+                    videos: [],
+                    pagination: { has_more: false }
+                });
+            }
+
+            // Calculate pagination
+            const startIdx = (page - 1) * limit;
+            const endIdx = startIdx + limit;
+            
+            // Process current batch
+            for (const short of shortsTab.videos.slice(startIdx, endIdx)) {
                 try {
-                    console.log(`Fetching info for video: ${video.id}`);
-                    const videoInfo = await yt.getInfo(video.id);
+                    const shortInfo = await yt.getShortsVideoInfo(short.id);
                     
-                    // Try to get the most accurate date
-                    let publishDate;
-                    
-                    // Parse primary_info date if available
-                    if (videoInfo.primary_info?.published?.text) {
-                        const primaryInfoDate = videoInfo.primary_info.published.text;
-                        // Remove "Premiered" prefix if present
-                        const cleanDate = primaryInfoDate.replace(/^Premiered\s+/, '');
-                        const parsedDate = new Date(cleanDate);
-                        if (!isNaN(parsedDate.getTime())) {
-                            publishDate = parsedDate.toISOString();
-                        }
-                    }
-
-                    // Fallback to other sources if primary_info date parsing failed
-                    if (!publishDate) {
-                        if (videoInfo.basic_info?.publish_date && !videoInfo.basic_info.publish_date.includes('ago')) {
-                            publishDate = videoInfo.basic_info.publish_date;
-                        } else if (videoInfo.metadata?.publishDate) {
-                            publishDate = videoInfo.metadata.publishDate;
-                        } else if (videoInfo.microformat?.publishDate) {
-                            publishDate = videoInfo.microformat.publishDate;
-                        } else if (video.published?.text) {
-                            publishDate = parseYouTubeDate(video.published.text);
-                        } else {
-                            console.warn(`No publish date found for video ${video.id}`);
-                            publishDate = new Date().toISOString();
-                        }
-                    }
-
-                    console.log(`Final parsed date for video ${video.id}: ${publishDate}`);
-                    
-                    const videoData = {
-                        video_id: video.id,
-                        title: videoInfo.basic_info?.title || video.title?.text || '',
-                        description: videoInfo.primary_info?.description?.text || 
-                                   videoInfo.basic_info?.description || 
-                                   video.description_snippet?.text || '',
-                        thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
-                                     video.thumbnail?.[0]?.url ||
-                                     `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
-                        published_at: publishDate,
-                        views: video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                    const shortData = {
+                        video_id: short.id,
+                        title: shortInfo.basic_info?.title || short.title?.text || '',
+                        description: shortInfo.basic_info?.description || 
+                                   shortInfo.primary_info?.description?.text ||
+                                   short.description_snippet?.text || '',
+                        thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
+                                     short.thumbnail?.[0]?.url ||
+                                     `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                        published_at: shortInfo.basic_info?.publish_date || new Date().toISOString(),
+                        views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
                         channel_id: channel.metadata?.external_id || '',
                         channel_title: channel.metadata?.title || '',
-                        duration: videoInfo.basic_info?.duration?.text || video.duration?.text || ''
+                        duration: shortInfo.basic_info?.duration?.text || short.duration?.text || ''
                     };
                     
-                    videos.push(videoData);
-                    console.log(`Added video ${videos.length}: ${videoData.video_id}`);
-                    
-                    // If we've reached the limit, stop processing more videos
-                    if (videos.length >= limit) {
-                        break;
-                    }
-
-                    // Add a small delay between video info requests
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                } catch (videoError) {
-                    console.error(`Error processing video ${video.id}:`, videoError);
+                    videos.push(shortData);
+                } catch (shortError) {
+                    console.error(`Error processing short ${short.id}:`, shortError);
                     continue;
                 }
             }
-        }
 
-        // Check if there are actually more videos
-        let hasMore = false;
-        try {
-            if (currentBatch?.has_continuation) {
-                // Try to peek at the next batch
-                const nextBatch = await currentBatch.getContinuation();
-                hasMore = !!(nextBatch?.videos?.length);
+            // Check if we need to load more
+            hasMore = shortsTab.has_continuation && 
+                     typeof shortsTab.getContinuation === 'function' &&
+                     shortsTab.videos.length > endIdx;
+
+        } else {
+            // Existing video fetching logic...
+            const videosTab = await channel.getVideos();
+            console.log('Initial videos tab data received');
+            
+            let currentPage = 1;
+            let currentBatch = videosTab;
+            let continuationAttempts = 0;
+            const MAX_CONTINUATION_ATTEMPTS = 3;
+            
+            // Skip to the requested page
+            while (currentPage < page && currentBatch?.has_continuation) {
+                console.log(`Skipping page ${currentPage}, getting next batch...`);
+                try {
+                    const nextBatch = await currentBatch.getContinuation();
+                    if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
+                        console.log('No more videos in continuation');
+                        break;
+                    }
+                    currentBatch = nextBatch;
+                    currentPage++;
+                    continuationAttempts = 0; // Reset attempts on successful continuation
+                } catch (continuationError) {
+                    console.error(`Continuation error on page ${currentPage}:`, continuationError);
+                    continuationAttempts++;
+                    
+                    if (continuationAttempts >= MAX_CONTINUATION_ATTEMPTS) {
+                        console.error(`Failed to get continuation after ${MAX_CONTINUATION_ATTEMPTS} attempts`);
+                        break;
+                    }
+                    
+                    // Wait before retrying
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    continue;
+                }
             }
-        } catch (error) {
-            console.error('Error checking for more videos:', error);
-            // Assume there might be more if we can't check
-            hasMore = currentBatch?.has_continuation || false;
+            
+            // Process the current page
+            if (currentBatch?.videos?.length) {
+                console.log(`Processing ${currentBatch.videos.length} videos for page ${page}`);
+                
+                for (const video of currentBatch.videos) {
+                    try {
+                        console.log(`Fetching info for video: ${video.id}`);
+                        const videoInfo = await yt.getInfo(video.id);
+                        
+                        // Try to get the most accurate date
+                        let publishDate;
+                        
+                        // Parse primary_info date if available
+                        if (videoInfo.primary_info?.published?.text) {
+                            const primaryInfoDate = videoInfo.primary_info.published.text;
+                            // Remove "Premiered" prefix if present
+                            const cleanDate = primaryInfoDate.replace(/^Premiered\s+/, '');
+                            const parsedDate = new Date(cleanDate);
+                            if (!isNaN(parsedDate.getTime())) {
+                                publishDate = parsedDate.toISOString();
+                            }
+                        }
+
+                        // Fallback to other sources if primary_info date parsing failed
+                        if (!publishDate) {
+                            if (videoInfo.basic_info?.publish_date && !videoInfo.basic_info.publish_date.includes('ago')) {
+                                publishDate = videoInfo.basic_info.publish_date;
+                            } else if (videoInfo.metadata?.publishDate) {
+                                publishDate = videoInfo.metadata.publishDate;
+                            } else if (videoInfo.microformat?.publishDate) {
+                                publishDate = videoInfo.microformat.publishDate;
+                            } else if (video.published?.text) {
+                                publishDate = parseYouTubeDate(video.published.text);
+                            } else {
+                                console.warn(`No publish date found for video ${video.id}`);
+                                publishDate = new Date().toISOString();
+                            }
+                        }
+
+                        console.log(`Final parsed date for video ${video.id}: ${publishDate}`);
+                        
+                        const videoData = {
+                            video_id: video.id,
+                            title: videoInfo.basic_info?.title || video.title?.text || '',
+                            description: videoInfo.primary_info?.description?.text || 
+                                       videoInfo.basic_info?.description || 
+                                       video.description_snippet?.text || '',
+                            thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
+                                         video.thumbnail?.[0]?.url ||
+                                         `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
+                            published_at: publishDate,
+                            views: video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                            channel_id: channel.metadata?.external_id || '',
+                            channel_title: channel.metadata?.title || '',
+                            duration: videoInfo.basic_info?.duration?.text || video.duration?.text || ''
+                        };
+                        
+                        videos.push(videoData);
+                        console.log(`Added video ${videos.length}: ${videoData.video_id}`);
+                        
+                        // If we've reached the limit, stop processing more videos
+                        if (videos.length >= limit) {
+                            break;
+                        }
+
+                        // Add a small delay between video info requests
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    } catch (videoError) {
+                        console.error(`Error processing video ${video.id}:`, videoError);
+                        continue;
+                    }
+                }
+            }
+
+            // Check if there are actually more videos
+            try {
+                if (currentBatch?.has_continuation) {
+                    // Try to peek at the next batch
+                    const nextBatch = await currentBatch.getContinuation();
+                    hasMore = !!(nextBatch?.videos?.length);
+                }
+            } catch (error) {
+                console.error('Error checking for more videos:', error);
+                // Assume there might be more if we can't check
+                hasMore = currentBatch?.has_continuation || false;
+            }
         }
 
-        // Add pagination metadata
-        const response = {
-            videos: videos,
+        res.json({
+            videos,
             pagination: {
-                page: page,
-                limit: limit,
-                has_more: hasMore,
-                current_page_size: videos.length
+                has_more: hasMore
             }
-        };
+        });
 
-        console.log(`Returning ${videos.length} videos for page ${page} (has_more: ${hasMore})`);
-        res.json(response);
     } catch (error) {
         console.error('Channel videos error:', error);
         res.status(500).json({ error: error.message });
