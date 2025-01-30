@@ -137,15 +137,17 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         const channel = await yt.getChannel(req.params.channelId);
         const videos = [];
         
+        // Get initial videos tab
         let videosTab = await channel.getVideos();
         console.log('Initial videos tab data:', JSON.stringify(videosTab, null, 2));
         
-        // Keep fetching videos while there are more available
-        while (videosTab?.videos) {
+        let hasMore = true;
+        while (hasMore && videosTab?.videos?.length) {
+            console.log(`Processing batch of ${videosTab.videos.length} videos`);
+            
             for (const video of videosTab.videos) {
                 try {
                     const videoInfo = await yt.getInfo(video.id);
-                    console.log('Video info for', video.id, ':', JSON.stringify(videoInfo.basic_info, null, 2));
                     
                     // Get description from multiple possible locations
                     let description = '';
@@ -163,13 +165,10 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     let publishDate;
                     if (video.published?.text) {
                         publishDate = parseYouTubeDate(video.published.text);
-                        console.log(`Video ${video.id} published ${video.published.text} -> ${publishDate}`);
                     } else if (videoInfo.basic_info?.published) {
                         publishDate = parseYouTubeDate(videoInfo.basic_info.published);
-                        console.log(`Video ${video.id} published (from info) ${videoInfo.basic_info.published} -> ${publishDate}`);
                     } else {
                         publishDate = new Date().toISOString();
-                        console.log(`Video ${video.id} no publish date found, using current time`);
                     }
                     
                     // Parse view count
@@ -193,20 +192,32 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     };
                     
                     videos.push(videoData);
-                    console.log(`Added video data (${videos.length}):`, videoData);
+                    console.log(`Added video ${videos.length}: ${videoData.video_id}`);
                 } catch (videoError) {
                     console.error(`Error processing video ${video.id}:`, videoError);
                     continue;
                 }
             }
 
-            // Check if there are more videos to load
-            if (videosTab.continuation) {
-                console.log('Loading more videos...');
-                videosTab = await videosTab.getContinuation();
-            } else {
-                console.log('No more videos to load');
-                break;
+            try {
+                // Check for continuation using the documented method
+                if (videosTab.has_continuation && typeof videosTab.getContinuation === 'function') {
+                    console.log('Fetching next batch of videos...');
+                    const nextBatch = await videosTab.getContinuation();
+                    if (nextBatch && nextBatch.videos && nextBatch.videos.length > 0) {
+                        videosTab = nextBatch;
+                        console.log(`Successfully loaded next batch with ${videosTab.videos.length} videos`);
+                    } else {
+                        console.log('No more videos in next batch');
+                        hasMore = false;
+                    }
+                } else {
+                    console.log('No more videos to load');
+                    hasMore = false;
+                }
+            } catch (continuationError) {
+                console.error('Error getting continuation:', continuationError);
+                hasMore = false;
             }
         }
 
