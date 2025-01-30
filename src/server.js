@@ -161,19 +161,36 @@ function parseYouTubeDate(dateStr) {
 // Get channel videos endpoint
 app.get('/api/channel/:channelId/videos', async (req, res) => {
     try {
-        console.log('Fetching channel:', req.params.channelId);
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 50;
+        
+        console.log(`Fetching channel: ${req.params.channelId} (page ${page}, limit ${limit})`);
         const channel = await yt.getChannel(req.params.channelId);
         const videos = [];
         
         // Get initial videos tab
         let videosTab = await channel.getVideos();
-        console.log('Initial videos tab data:', JSON.stringify(videosTab, null, 2));
         
-        let hasMore = true;
-        while (hasMore && videosTab?.videos?.length) {
-            console.log(`Processing batch of ${videosTab.videos.length} videos`);
+        // Skip videos for previous pages
+        const skipCount = (page - 1) * limit;
+        let processedCount = 0;
+        let currentBatch = videosTab;
+        
+        // Skip to the requested page
+        while (processedCount < skipCount && currentBatch?.videos?.length) {
+            processedCount += currentBatch.videos.length;
+            if (processedCount < skipCount && currentBatch.has_continuation) {
+                currentBatch = await currentBatch.getContinuation();
+            }
+        }
+        
+        // Process the requested page
+        if (currentBatch?.videos?.length) {
+            const startIndex = Math.max(0, skipCount - (processedCount - currentBatch.videos.length));
+            const endIndex = Math.min(startIndex + limit, currentBatch.videos.length);
             
-            for (const video of videosTab.videos) {
+            for (let i = startIndex; i < endIndex; i++) {
+                const video = currentBatch.videos[i];
                 try {
                     const videoInfo = await yt.getInfo(video.id);
                     
@@ -271,30 +288,9 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     continue;
                 }
             }
-
-            try {
-                // Check for continuation using the documented method
-                if (videosTab.has_continuation && typeof videosTab.getContinuation === 'function') {
-                    console.log('Fetching next batch of videos...');
-                    const nextBatch = await videosTab.getContinuation();
-                    if (nextBatch && nextBatch.videos && nextBatch.videos.length > 0) {
-                        videosTab = nextBatch;
-                        console.log(`Successfully loaded next batch with ${videosTab.videos.length} videos`);
-                    } else {
-                        console.log('No more videos in next batch');
-                        hasMore = false;
-                    }
-                } else {
-                    console.log('No more videos to load');
-                    hasMore = false;
-                }
-            } catch (continuationError) {
-                console.error('Error getting continuation:', continuationError);
-                hasMore = false;
-            }
         }
 
-        console.log(`Total videos found: ${videos.length}`);
+        console.log(`Returning ${videos.length} videos for page ${page}`);
         res.json(videos);
     } catch (error) {
         console.error('Channel videos error:', error);
