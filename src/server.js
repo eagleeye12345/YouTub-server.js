@@ -143,8 +143,8 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         if (videosTab?.videos) {
             for (const video of videosTab.videos) {
                 try {
-                    // Get full video info
-                    const videoInfo = await yt.getBasicInfo(video.id);
+                    // Get full video details using getInfo
+                    const videoDetails = await yt.getInfo(video.id);
                     console.log('Fetching full info for video:', video.id);
                     
                     // Get published date from video metadata
@@ -152,9 +152,9 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     if (video.published?.text) {
                         publishDate = parseYouTubeDate(video.published.text);
                         console.log(`Video ${video.id} published ${video.published.text} -> ${publishDate}`);
-                    } else if (videoInfo.basic_info?.published) {
-                        publishDate = parseYouTubeDate(videoInfo.basic_info.published);
-                        console.log(`Video ${video.id} published (from info) ${videoInfo.basic_info.published} -> ${publishDate}`);
+                    } else if (videoDetails.basic_info?.published) {
+                        publishDate = parseYouTubeDate(videoDetails.basic_info.published);
+                        console.log(`Video ${video.id} published (from info) ${videoDetails.basic_info.published} -> ${publishDate}`);
                     } else {
                         publishDate = new Date().toISOString();
                         console.log(`Video ${video.id} no publish date found, using current time`);
@@ -166,37 +166,34 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                         viewCount = video.view_count.text.replace(/[^0-9]/g, '');
                     }
 
-                    // Get full description
-                    let fullDescription = '';
-                    try {
-                        const detailedInfo = await yt.getInfo(video.id);
-                        fullDescription = detailedInfo.basic_info?.description || 
-                                        detailedInfo.description || 
-                                        video.description?.text || '';
-                        console.log(`Got full description for video ${video.id}, length: ${fullDescription.length} chars`);
-                    } catch (descError) {
-                        console.error(`Error getting description for ${video.id}:`, descError);
-                        fullDescription = video.description?.text || '';
-                    }
+                    // Get full description from video details
+                    const fullDescription = videoDetails.description || 
+                                          videoDetails.basic_info?.description || 
+                                          videoDetails.details?.description || 
+                                          video.description?.text || '';
+                                          
+                    console.log(`Full description for video ${video.id}:`, fullDescription);
                     
                     const videoData = {
                         video_id: video.id,
-                        title: videoInfo.basic_info?.title || video.title?.text || '',
+                        title: videoDetails.basic_info?.title || video.title?.text || '',
                         description: fullDescription,
-                        thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
+                        thumbnail_url: videoDetails.basic_info?.thumbnail?.[0]?.url || 
                                      video.thumbnail?.[0]?.url ||
                                      `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
                         published_at: publishDate,
                         views: viewCount,
                         channel_id: channel.metadata?.external_id || '',
                         channel_title: channel.metadata?.title || '',
-                        duration: videoInfo.basic_info?.duration?.text || video.duration?.text || ''
+                        duration: videoDetails.basic_info?.duration?.text || video.duration?.text || ''
                     };
                     
                     videos.push(videoData);
                     console.log('Added video data:', {
                         ...videoData,
-                        description: videoData.description.substring(0, 100) + '...' // Log truncated description
+                        description: videoData.description ? 
+                            `${videoData.description.substring(0, 100)}... (total length: ${videoData.description.length})` : 
+                            'No description'
                     });
                 } catch (videoError) {
                     console.error(`Error processing video ${video.id}:`, videoError);
