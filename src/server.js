@@ -15,54 +15,11 @@ let ytInitialized = false;
 
 async function initializeYouTube() {
     try {
-        console.log('Starting YouTube client initialization...');
-        
-        yt = await Innertube.create({
-            generate_session_locally: true,
-            fetch: (input, init) => {
-                try {
-                    // Log the incoming request
-                    console.log('Fetch request:', {
-                        input: typeof input === 'string' ? input : input?.url,
-                        method: init?.method,
-                        headers: init?.headers
-                    });
-
-                    // If input is a string URL, use it directly
-                    if (typeof input === 'string') {
-                        return fetch(input, init);
-                    }
-
-                    // If input is a Request object, use its URL
-                    if (input instanceof Request) {
-                        return fetch(input.url, init);
-                    }
-
-                    // If input is an object with a url property
-                    if (input && typeof input === 'object' && input.url) {
-                        return fetch(input.url, init);
-                    }
-
-                    // Default YouTube API URL if none provided
-                    const defaultUrl = 'https://www.youtube.com';
-                    console.log('Using default URL:', defaultUrl);
-                    return fetch(defaultUrl, init);
-
-                } catch (error) {
-                    console.error('Fetch error:', error);
-                    throw error;
-                }
-            },
-            cache: false
-        });
-        
+        yt = await Innertube.create();
         ytInitialized = true;
         console.log('YouTube client initialized successfully');
     } catch (error) {
         console.error('Failed to initialize YouTube client:', error);
-        if (error.cause) {
-            console.error('Cause:', error.cause);
-        }
         throw error;
     }
 }
@@ -181,40 +138,37 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         const videos = [];
         
         const videosTab = await channel.getVideos();
+        console.log('Videos tab data:', JSON.stringify(videosTab, null, 2));
         
         if (videosTab?.videos) {
             for (const video of videosTab.videos) {
                 try {
-                    // Get basic video info first
-                    const videoInfo = await yt.getBasicInfo(video.id);
-                    console.log('Got basic info for video:', video.id);
+                    const videoInfo = await yt.getInfo(video.id);
+                    console.log('Video info for', video.id, ':', JSON.stringify(videoInfo.basic_info, null, 2));
                     
-                    // Get published date
+                    // Get published date from video metadata
                     let publishDate;
                     if (video.published?.text) {
                         publishDate = parseYouTubeDate(video.published.text);
                         console.log(`Video ${video.id} published ${video.published.text} -> ${publishDate}`);
                     } else if (videoInfo.basic_info?.published) {
                         publishDate = parseYouTubeDate(videoInfo.basic_info.published);
+                        console.log(`Video ${video.id} published (from info) ${videoInfo.basic_info.published} -> ${publishDate}`);
                     } else {
                         publishDate = new Date().toISOString();
+                        console.log(`Video ${video.id} no publish date found, using current time`);
                     }
-
+                    
                     // Parse view count
                     let viewCount = '0';
                     if (video.view_count?.text) {
                         viewCount = video.view_count.text.replace(/[^0-9]/g, '');
                     }
-
-                    // Get description from video info
-                    const description = videoInfo.basic_info?.description || 
-                                      video.description?.text || 
-                                      '';
-
+                    
                     const videoData = {
                         video_id: video.id,
                         title: videoInfo.basic_info?.title || video.title?.text || '',
-                        description: description,
+                        description: videoInfo.basic_info?.description || video.description?.text || '',
                         thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
                                      video.thumbnail?.[0]?.url ||
                                      `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
@@ -226,12 +180,7 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     };
                     
                     videos.push(videoData);
-                    console.log('Added video data:', {
-                        ...videoData,
-                        description: videoData.description ? 
-                            `${videoData.description.substring(0, 150)}... (${videoData.description.length} chars)` : 
-                            'No description'
-                    });
+                    console.log('Added video data:', videoData);
                 } catch (videoError) {
                     console.error(`Error processing video ${video.id}:`, videoError);
                     continue;
@@ -281,19 +230,6 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-});
-
-// Add error handler for uncaught exceptions
-process.on('uncaughtException', (error) => {
-    console.error('Uncaught Exception:', error);
-    if (error.cause) {
-        console.error('Cause:', error.cause);
-    }
-});
-
-// Add error handler for unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 // Initialize YouTube client before starting the server
