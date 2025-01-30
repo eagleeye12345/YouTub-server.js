@@ -173,60 +173,90 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         
         if (type === 'shorts') {
             try {
-                // Get shorts tab specifically
-                let shortsTab = await channel.getShorts();
-                console.log('Initial shorts tab loaded');
-                
-                if (!shortsTab?.videos) {
+                // First check if channel has shorts
+                if (!channel.has_shorts) {
+                    console.log('Channel has no shorts tab');
                     return res.json({ 
                         videos: [],
                         pagination: { has_more: false }
                     });
                 }
 
-                // Calculate pagination
-                const startIdx = (page - 1) * limit;
-                const endIdx = startIdx + limit;
-                
-                // Process current batch
-                for (const short of shortsTab.videos.slice(startIdx, endIdx)) {
+                // Get shorts tab
+                let shortsTab = await channel.getShorts();
+                console.log('Initial shorts tab loaded');
+
+                // Get continuation if not on first page
+                let currentPage = 1;
+                let currentBatch = shortsTab;
+                let continuationAttempts = 0;
+                const MAX_CONTINUATION_ATTEMPTS = 3;
+
+                // Skip to requested page
+                while (currentPage < page && currentBatch?.has_continuation) {
+                    console.log(`Skipping shorts page ${currentPage}, getting next batch...`);
                     try {
-                        // Use basic info instead of full video info for shorts
-                        const shortData = {
-                            video_id: short.id,
-                            title: short.title?.text || '',
-                            description: short.description_snippet?.text || '',
-                            thumbnail_url: short.thumbnail?.[0]?.url || 
-                                         `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
-                            published_at: parseYouTubeDate(short.published?.text) || new Date().toISOString(),
-                            views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
-                            channel_id: channel.metadata?.external_id || '',
-                            channel_title: channel.metadata?.title || '',
-                            duration: short.duration?.text || ''
-                        };
+                        const nextBatch = await currentBatch.getContinuation();
+                        if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
+                            console.log('No more shorts in continuation');
+                            break;
+                        }
+                        currentBatch = nextBatch;
+                        currentPage++;
+                        continuationAttempts = 0;
+                    } catch (continuationError) {
+                        console.error(`Shorts continuation error on page ${currentPage}:`, continuationError);
+                        continuationAttempts++;
                         
-                        videos.push(shortData);
-                        console.log(`Added short ${videos.length}: ${shortData.video_id}`);
-                    } catch (shortError) {
-                        console.error(`Error processing short ${short.id}:`, shortError);
+                        if (continuationAttempts >= MAX_CONTINUATION_ATTEMPTS) {
+                            console.error(`Failed to get shorts continuation after ${MAX_CONTINUATION_ATTEMPTS} attempts`);
+                            break;
+                        }
+                        
+                        await new Promise(resolve => setTimeout(resolve, 2000));
                         continue;
                     }
                 }
 
-                // Check if we need to load more
-                hasMore = shortsTab.has_continuation && 
-                         typeof shortsTab.getContinuation === 'function' &&
-                         shortsTab.videos.length > endIdx;
+                // Process current page
+                if (currentBatch?.videos) {
+                    const startIdx = 0;
+                    const endIdx = limit;
+                    
+                    for (const short of currentBatch.videos.slice(startIdx, endIdx)) {
+                        try {
+                            const shortData = {
+                                video_id: short.id,
+                                title: short.title?.text || '',
+                                description: short.description_snippet?.text || '',
+                                thumbnail_url: short.thumbnail?.[0]?.url || 
+                                             `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                                published_at: parseYouTubeDate(short.published?.text) || new Date().toISOString(),
+                                views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                                channel_id: channel.metadata?.external_id || '',
+                                channel_title: channel.metadata?.title || '',
+                                duration: short.duration?.text || '',
+                                is_short: true
+                            };
+                            
+                            videos.push(shortData);
+                            console.log(`Added short ${videos.length}: ${shortData.video_id}`);
+                        } catch (shortError) {
+                            console.error(`Error processing short ${short.id}:`, shortError);
+                            continue;
+                        }
+                    }
+
+                    // Check if more shorts available
+                    hasMore = currentBatch.has_continuation && 
+                             typeof currentBatch.getContinuation === 'function';
+                }
 
             } catch (shortsError) {
                 console.error('Error fetching shorts:', shortsError);
-                // Fall back to regular videos if shorts tab fails
-                console.log('Falling back to regular videos...');
-                type = 'videos';
+                throw shortsError; // Let the error handler deal with it
             }
-        }
-
-        if (type === 'videos') {
+        } else {
             // Existing video fetching logic...
             const videosTab = await channel.getVideos();
             console.log('Initial videos tab data received');
@@ -354,7 +384,10 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         res.json({
             videos,
             pagination: {
-                has_more: hasMore
+                has_more: hasMore,
+                current_page: page,
+                items_per_page: limit,
+                total_items: videos.length
             }
         });
 
