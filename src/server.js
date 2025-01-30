@@ -50,13 +50,14 @@ app.get('/api/channel/:channelId', async (req, res) => {
         console.log('Fetching channel:', req.params.channelId);
         const channel = await yt.getChannel(req.params.channelId);
         
-        // Extract channel info from metadata
+        // Extract channel info from metadata and header
         const channelInfo = {
-            id: channel.metadata?.external_id,
-            title: channel.metadata?.title,
-            thumbnail_url: channel.metadata?.avatar?.[0]?.url,
-            banner_url: channel.header?.content?.banner?.image?.url,
-            description: channel.metadata?.description
+            id: channel.metadata.external_id,
+            title: channel.metadata.title,
+            description: channel.metadata.description,
+            thumbnail_url: channel.metadata.avatar?.[0]?.url || channel.metadata.thumbnail?.[0]?.url,
+            banner_url: channel.header?.content?.banner?.image?.[0]?.url || 
+                       channel.header?.content?.banner?.desktop?.[0]?.url
         };
 
         res.json(channelInfo);
@@ -90,27 +91,60 @@ app.get('/api/video/:videoId', async (req, res) => {
 
 // Get channel videos endpoint
 app.get('/api/channel/:channelId/videos', async (req, res) => {
-  try {
-    const channel = await yt.getChannel(req.params.channelId);
-    
-    // Get the videos from the channel's home tab
-    const videos = channel.current_tab?.content?.contents
-      ?.filter(item => item.type === 'Video')
-      ?.map(video => ({
-        video_id: video.id,
-        title: video.title?.text || '',
-        description: video.description?.text || '',
-        thumbnail_url: video.thumbnail?.[0]?.url || '',
-        published_at: video.published?.text || '',
-        views: video.view_count?.text || '0',
-        channel_id: req.params.channelId
-      })) || [];
+    try {
+        const channel = await yt.getChannel(req.params.channelId);
+        const videos = [];
+        
+        // Get videos from channel's content tab
+        const contents = channel.current_tab?.content?.contents || [];
+        
+        for (const item of contents) {
+            if (item.type === 'Video' || item.type === 'GridVideo' || item.type === 'ReelItem') {
+                try {
+                    // Fetch detailed video info
+                    const videoInfo = await yt.getInfo(item.id);
+                    videos.push({
+                        video_id: item.id,
+                        title: videoInfo.basic_info.title,
+                        description: videoInfo.basic_info.description,
+                        thumbnail_url: videoInfo.basic_info.thumbnail[0].url,
+                        published_at: videoInfo.basic_info.published.text,
+                        views: videoInfo.basic_info.view_count.toString(),
+                        channel_id: channel.metadata.external_id,
+                        channel_title: channel.metadata.title,
+                        duration: videoInfo.basic_info.duration.text
+                    });
+                } catch (videoError) {
+                    console.error(`Error fetching video ${item.id}:`, videoError);
+                    // Continue with next video if one fails
+                    continue;
+                }
+            }
+        }
 
-    res.json(videos);
-  } catch (error) {
-    console.error('Channel videos error:', error);
-    res.status(500).json({ error: error.message });
-  }
+        // If we got no videos from the first method, try the videos tab
+        if (videos.length === 0) {
+            const videosTab = await channel.getVideos();
+            for (const video of videosTab.videos) {
+                videos.push({
+                    video_id: video.id,
+                    title: video.title.text,
+                    description: video.description?.text || '',
+                    thumbnail_url: video.thumbnail[0].url,
+                    published_at: video.published?.text || '',
+                    views: video.view_count?.text || '0',
+                    channel_id: channel.metadata.external_id,
+                    channel_title: channel.metadata.title,
+                    duration: video.duration?.text || ''
+                });
+            }
+        }
+
+        res.json(videos);
+    } catch (error) {
+        console.error('Channel videos error:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // Search endpoint
