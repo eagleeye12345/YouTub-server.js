@@ -90,44 +90,67 @@ app.get('/api/video/:videoId', async (req, res) => {
 });
 
 // Helper function to parse YouTube relative time
-function parseYouTubeDate(publishedText) {
-    if (!publishedText) return new Date().toISOString();
-    
-    console.log('Parsing date from:', publishedText);
-    
-    // Extract number and unit from strings like "9 years ago"
-    const match = publishedText.match(/(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago/i);
-    if (!match) return new Date().toISOString();
-    
-    const amount = parseInt(match[1]);
-    const unit = match[2].toLowerCase();
-    
-    const now = new Date();
-    switch (unit) {
-        case 'year':
-            now.setFullYear(now.getFullYear() - amount);
-            break;
-        case 'month':
-            now.setMonth(now.getMonth() - amount);
-            break;
-        case 'week':
-            now.setDate(now.getDate() - (amount * 7));
-            break;
-        case 'day':
-            now.setDate(now.getDate() - amount);
-            break;
-        case 'hour':
-            now.setHours(now.getHours() - amount);
-            break;
-        case 'minute':
-            now.setMinutes(now.getMinutes() - amount);
-            break;
-        case 'second':
-            now.setSeconds(now.getSeconds() - amount);
-            break;
+function parseYouTubeDate(dateStr) {
+    try {
+        if (!dateStr) return new Date().toISOString();
+
+        // If it's already an ISO date string, return it
+        if (dateStr.includes('T') && dateStr.includes('Z')) {
+            return dateStr;
+        }
+
+        // Handle relative dates like "X years/months/weeks/days ago"
+        const now = new Date();
+        const matches = dateStr.match(/(\d+)\s+(year|month|week|day|hour|minute|second)s?\s+ago/i);
+        
+        if (matches) {
+            const amount = parseInt(matches[1]);
+            const unit = matches[2].toLowerCase();
+            
+            switch (unit) {
+                case 'year':
+                    now.setFullYear(now.getFullYear() - amount);
+                    break;
+                case 'month':
+                    now.setMonth(now.getMonth() - amount);
+                    break;
+                case 'week':
+                    now.setDate(now.getDate() - (amount * 7));
+                    break;
+                case 'day':
+                    now.setDate(now.getDate() - amount);
+                    break;
+                case 'hour':
+                    now.setHours(now.getHours() - amount);
+                    break;
+                case 'minute':
+                    now.setMinutes(now.getMinutes() - amount);
+                    break;
+                case 'second':
+                    now.setSeconds(now.getSeconds() - amount);
+                    break;
+            }
+            
+            // Set time to midnight for older dates (more than a week old)
+            if (amount > 0 && ['year', 'month', 'week'].includes(unit)) {
+                now.setHours(0, 0, 0, 0);
+            }
+            
+            return now.toISOString();
+        }
+
+        // Try parsing as a regular date if not relative
+        const parsedDate = new Date(dateStr);
+        if (!isNaN(parsedDate.getTime())) {
+            return parsedDate.toISOString();
+        }
+
+        // Return current date if parsing fails
+        return new Date().toISOString();
+    } catch (error) {
+        console.error('Error parsing date:', dateStr, error);
+        return new Date().toISOString();
     }
-    
-    return now.toISOString();
 }
 
 // Get channel videos endpoint
@@ -149,6 +172,21 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                 try {
                     const videoInfo = await yt.getInfo(video.id);
                     
+                    // Get published date with better handling
+                    let publishDate;
+                    if (videoInfo.basic_info?.publish_date) {
+                        publishDate = parseYouTubeDate(videoInfo.basic_info.publish_date);
+                    } else if (video.published?.text) {
+                        publishDate = parseYouTubeDate(video.published.text);
+                    } else if (videoInfo.primary_info?.published?.text) {
+                        publishDate = parseYouTubeDate(videoInfo.primary_info.published.text);
+                    } else {
+                        console.warn(`No publish date found for video ${video.id}`);
+                        publishDate = new Date().toISOString();
+                    }
+
+                    console.log(`Parsing date from: ${video.published?.text || videoInfo.basic_info?.publish_date} -> ${publishDate}`);
+                    
                     // Get description from multiple possible locations
                     let description = '';
                     if (videoInfo.primary_info?.description?.text) {
@@ -159,16 +197,6 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                         description = videoInfo.basic_info.description;
                     } else if (video.description_snippet?.text) {
                         description = video.description_snippet.text;
-                    }
-                    
-                    // Get published date from video metadata
-                    let publishDate;
-                    if (video.published?.text) {
-                        publishDate = parseYouTubeDate(video.published.text);
-                    } else if (videoInfo.basic_info?.published) {
-                        publishDate = parseYouTubeDate(videoInfo.basic_info.published);
-                    } else {
-                        publishDate = new Date().toISOString();
                     }
                     
                     // Parse view count
