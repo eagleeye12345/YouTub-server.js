@@ -89,39 +89,41 @@ app.get('/api/video/:videoId', async (req, res) => {
   }
 });
 
-// Helper function to convert relative time to timestamp
-function parseRelativeTime(relativeTime) {
-    if (!relativeTime) return new Date().toISOString();
+// Helper function to parse YouTube relative time
+function parseYouTubeDate(publishedText) {
+    if (!publishedText) return new Date().toISOString();
+    
+    console.log('Parsing date from:', publishedText);
+    
+    // Extract number and unit from strings like "9 years ago"
+    const match = publishedText.match(/(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago/i);
+    if (!match) return new Date().toISOString();
+    
+    const amount = parseInt(match[1]);
+    const unit = match[2].toLowerCase();
     
     const now = new Date();
-    const matches = relativeTime.toLowerCase().match(/(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago/);
-    
-    if (!matches) return now.toISOString();
-    
-    const [_, amount, unit] = matches;
-    const value = parseInt(amount);
-    
     switch (unit) {
         case 'year':
-            now.setFullYear(now.getFullYear() - value);
+            now.setFullYear(now.getFullYear() - amount);
             break;
         case 'month':
-            now.setMonth(now.getMonth() - value);
+            now.setMonth(now.getMonth() - amount);
             break;
         case 'week':
-            now.setDate(now.getDate() - (value * 7));
+            now.setDate(now.getDate() - (amount * 7));
             break;
         case 'day':
-            now.setDate(now.getDate() - value);
+            now.setDate(now.getDate() - amount);
             break;
         case 'hour':
-            now.setHours(now.getHours() - value);
+            now.setHours(now.getHours() - amount);
             break;
         case 'minute':
-            now.setMinutes(now.getMinutes() - value);
+            now.setMinutes(now.getMinutes() - amount);
             break;
         case 'second':
-            now.setSeconds(now.getSeconds() - value);
+            now.setSeconds(now.getSeconds() - amount);
             break;
     }
     
@@ -144,16 +146,25 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     const videoInfo = await yt.getInfo(video.id);
                     console.log('Video info for', video.id, ':', JSON.stringify(videoInfo.basic_info, null, 2));
                     
+                    // Get published date from video metadata
+                    let publishDate;
+                    if (video.published?.text) {
+                        publishDate = parseYouTubeDate(video.published.text);
+                        console.log(`Video ${video.id} published ${video.published.text} -> ${publishDate}`);
+                    } else if (videoInfo.basic_info?.published) {
+                        publishDate = parseYouTubeDate(videoInfo.basic_info.published);
+                        console.log(`Video ${video.id} published (from info) ${videoInfo.basic_info.published} -> ${publishDate}`);
+                    } else {
+                        publishDate = new Date().toISOString();
+                        console.log(`Video ${video.id} no publish date found, using current time`);
+                    }
+                    
                     // Parse view count
                     let viewCount = '0';
                     if (video.view_count?.text) {
                         viewCount = video.view_count.text.replace(/[^0-9]/g, '');
                     }
                     
-                    // Get published date
-                    const publishDate = parseRelativeTime(video.published?.text);
-                    console.log(`Original date: ${video.published?.text}, Parsed date: ${publishDate}`);
-
                     const videoData = {
                         video_id: video.id,
                         title: videoInfo.basic_info?.title || video.title?.text || '',
