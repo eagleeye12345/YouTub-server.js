@@ -163,7 +163,7 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 30;
-        const type = req.query.type || 'videos'; // Add type parameter: 'videos' or 'shorts'
+        const type = req.query.type || 'videos';
         
         console.log(`Fetching ${type} for channel:`, req.params.channelId, `(page ${page})`);
         const channel = await yt.getChannel(req.params.channelId);
@@ -172,55 +172,61 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         let hasMore = false;
         
         if (type === 'shorts') {
-            // Get shorts tab specifically
-            let shortsTab = await channel.getShorts();
-            console.log('Initial shorts tab loaded');
-            
-            if (!shortsTab?.videos) {
-                return res.json({ 
-                    videos: [],
-                    pagination: { has_more: false }
-                });
-            }
-
-            // Calculate pagination
-            const startIdx = (page - 1) * limit;
-            const endIdx = startIdx + limit;
-            
-            // Process current batch
-            for (const short of shortsTab.videos.slice(startIdx, endIdx)) {
-                try {
-                    const shortInfo = await yt.getShortsVideoInfo(short.id);
-                    
-                    const shortData = {
-                        video_id: short.id,
-                        title: shortInfo.basic_info?.title || short.title?.text || '',
-                        description: shortInfo.basic_info?.description || 
-                                   shortInfo.primary_info?.description?.text ||
-                                   short.description_snippet?.text || '',
-                        thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
-                                     short.thumbnail?.[0]?.url ||
-                                     `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
-                        published_at: shortInfo.basic_info?.publish_date || new Date().toISOString(),
-                        views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
-                        channel_id: channel.metadata?.external_id || '',
-                        channel_title: channel.metadata?.title || '',
-                        duration: shortInfo.basic_info?.duration?.text || short.duration?.text || ''
-                    };
-                    
-                    videos.push(shortData);
-                } catch (shortError) {
-                    console.error(`Error processing short ${short.id}:`, shortError);
-                    continue;
+            try {
+                // Get shorts tab specifically
+                let shortsTab = await channel.getShorts();
+                console.log('Initial shorts tab loaded');
+                
+                if (!shortsTab?.videos) {
+                    return res.json({ 
+                        videos: [],
+                        pagination: { has_more: false }
+                    });
                 }
+
+                // Calculate pagination
+                const startIdx = (page - 1) * limit;
+                const endIdx = startIdx + limit;
+                
+                // Process current batch
+                for (const short of shortsTab.videos.slice(startIdx, endIdx)) {
+                    try {
+                        // Use basic info instead of full video info for shorts
+                        const shortData = {
+                            video_id: short.id,
+                            title: short.title?.text || '',
+                            description: short.description_snippet?.text || '',
+                            thumbnail_url: short.thumbnail?.[0]?.url || 
+                                         `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                            published_at: parseYouTubeDate(short.published?.text) || new Date().toISOString(),
+                            views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                            channel_id: channel.metadata?.external_id || '',
+                            channel_title: channel.metadata?.title || '',
+                            duration: short.duration?.text || ''
+                        };
+                        
+                        videos.push(shortData);
+                        console.log(`Added short ${videos.length}: ${shortData.video_id}`);
+                    } catch (shortError) {
+                        console.error(`Error processing short ${short.id}:`, shortError);
+                        continue;
+                    }
+                }
+
+                // Check if we need to load more
+                hasMore = shortsTab.has_continuation && 
+                         typeof shortsTab.getContinuation === 'function' &&
+                         shortsTab.videos.length > endIdx;
+
+            } catch (shortsError) {
+                console.error('Error fetching shorts:', shortsError);
+                // Fall back to regular videos if shorts tab fails
+                console.log('Falling back to regular videos...');
+                type = 'videos';
             }
+        }
 
-            // Check if we need to load more
-            hasMore = shortsTab.has_continuation && 
-                     typeof shortsTab.getContinuation === 'function' &&
-                     shortsTab.videos.length > endIdx;
-
-        } else {
+        if (type === 'videos') {
             // Existing video fetching logic...
             const videosTab = await channel.getVideos();
             console.log('Initial videos tab data received');
