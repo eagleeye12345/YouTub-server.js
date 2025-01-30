@@ -24,15 +24,20 @@ app.get('/', (req, res) => {
 app.get('/api/channel/:channelId', async (req, res) => {
   try {
     const channel = await yt.getChannel(req.params.channelId);
+    console.log('Channel response:', channel); // For debugging
+
+    // Extract channel info from metadata
     const channelInfo = {
-      id: channel.info.channel_id,
-      title: channel.info.title,
-      thumbnail_url: channel.info.thumbnail?.[0]?.url,
-      banner_url: channel.info.banner?.[0]?.url,
-      uploads: channel.info.playlist_id // This is the uploads playlist ID
+      id: channel.metadata.external_id,
+      title: channel.metadata.title,
+      thumbnail_url: channel.metadata.avatar?.[0]?.url,
+      banner_url: channel.header?.content?.banner?.image?.url,
+      description: channel.metadata.description
     };
+
     res.json(channelInfo);
   } catch (error) {
+    console.error('Channel error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -48,12 +53,13 @@ app.get('/api/video/:videoId', async (req, res) => {
       thumbnail_url: videoInfo.basic_info.thumbnail[0].url,
       views: videoInfo.basic_info.view_count,
       published_at: videoInfo.basic_info.publish_date,
-      channel_id: videoInfo.basic_info.channel_id,
-      channel_title: videoInfo.basic_info.channel.name,
-      channel_thumbnail: videoInfo.basic_info.channel.thumbnails[0].url
+      channel_id: videoInfo.basic_info.channel?.id,
+      channel_title: videoInfo.basic_info.channel?.name,
+      channel_thumbnail: videoInfo.basic_info.channel?.thumbnails?.[0]?.url
     };
     res.json(simplifiedInfo);
   } catch (error) {
+    console.error('Video error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -62,18 +68,23 @@ app.get('/api/video/:videoId', async (req, res) => {
 app.get('/api/channel/:channelId/videos', async (req, res) => {
   try {
     const channel = await yt.getChannel(req.params.channelId);
-    const videos = await channel.getVideos();
-    const simplifiedVideos = videos.map(video => ({
-      video_id: video.id,
-      title: video.title,
-      description: video.description,
-      thumbnail_url: video.thumbnails[0].url,
-      published_at: video.published.text,
-      views: video.view_count,
-      channel_id: req.params.channelId
-    }));
-    res.json(simplifiedVideos);
+    
+    // Get the videos from the channel's home tab
+    const videos = channel.current_tab?.content?.contents
+      ?.filter(item => item.type === 'Video')
+      ?.map(video => ({
+        video_id: video.id,
+        title: video.title?.text || '',
+        description: video.description?.text || '',
+        thumbnail_url: video.thumbnail?.[0]?.url || '',
+        published_at: video.published?.text || '',
+        views: video.view_count?.text || '0',
+        channel_id: req.params.channelId
+      })) || [];
+
+    res.json(videos);
   } catch (error) {
+    console.error('Channel videos error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -88,17 +99,18 @@ app.get('/api/search', async (req, res) => {
     const results = await yt.search(query);
     const simplifiedResults = results.videos.map(video => ({
       video_id: video.id,
-      title: video.title,
-      description: video.description,
-      thumbnail_url: video.thumbnails[0].url,
-      published_at: video.published,
-      views: video.view_count,
+      title: video.title?.text || '',
+      description: video.description?.text || '',
+      thumbnail_url: video.thumbnails?.[0]?.url || '',
+      published_at: video.published?.text || '',
+      views: video.view_count?.text || '0',
       channel_id: video.channel?.id,
       channel_title: video.channel?.name,
-      channel_thumbnail: video.channel?.thumbnails[0]?.url
+      channel_thumbnail: video.channel?.thumbnails?.[0]?.url
     }));
     res.json(simplifiedResults);
   } catch (error) {
+    console.error('Search error:', error);
     res.status(500).json({ error: error.message });
   }
 });
