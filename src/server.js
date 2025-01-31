@@ -92,12 +92,18 @@ app.get('/api/video/:videoId', async (req, res) => {
 // Helper function to parse YouTube relative time
 function parseYouTubeDate(dateStr) {
     try {
-        if (!dateStr) return new Date().toISOString();
+        if (!dateStr) return null;
 
         // If it's already an ISO date string, return it
         if (dateStr.includes('T') && dateStr.includes('Z')) {
             return dateStr;
         }
+
+        // Handle "Streamed X time ago" format
+        dateStr = dateStr.replace(/^Streamed\s+/, '');
+        
+        // Handle "Premiered X time ago" format
+        dateStr = dateStr.replace(/^Premiered\s+/, '');
 
         // Handle relative dates like "X years/months/weeks/days ago"
         const matches = dateStr.match(/(\d+)\s+(year|month|week|day|hour|minute|second)s?\s+ago/i);
@@ -106,21 +112,13 @@ function parseYouTubeDate(dateStr) {
             const amount = parseInt(matches[1]);
             const unit = matches[2].toLowerCase();
             
-            // Get current date
             const now = new Date();
-            
-            // For years ago, try to get the actual publish date from the video info
-            if (unit === 'year') {
-                const year = now.getFullYear() - amount;
-                // Set to middle of the year if exact date unknown
-                // This gives a more reasonable estimate than January 1st
-                return new Date(year, 6, 1).toISOString();
-            }
-            
-            // For all other units, calculate from current date
             const date = new Date();
             
             switch (unit) {
+                case 'year':
+                    date.setFullYear(date.getFullYear() - amount);
+                    break;
                 case 'month':
                     date.setMonth(date.getMonth() - amount);
                     break;
@@ -144,17 +142,16 @@ function parseYouTubeDate(dateStr) {
             return date.toISOString();
         }
 
-        // Try parsing as a regular date if not relative
+        // Try parsing as a regular date
         const parsedDate = new Date(dateStr);
         if (!isNaN(parsedDate.getTime())) {
             return parsedDate.toISOString();
         }
 
-        // Return current date if parsing fails
-        return new Date().toISOString();
+        return null;
     } catch (error) {
         console.error('Error parsing date:', dateStr, error);
-        return new Date().toISOString();
+        return null;
     }
 }
 
@@ -284,12 +281,41 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                                          short.view_count?.text || 
                                          (short.accessibility_text?.match(/(\d+[KMB]?\s+views)/) || [])[1] || '0';
 
+                            // Extract published date from multiple possible locations
+                            const extractPublishedDate = (short) => {
+                                // Try to extract from accessibility text first (usually contains relative date)
+                                const accessibilityMatch = short.accessibility_text?.match(/(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
+                                if (accessibilityMatch) {
+                                    return parseYouTubeDate(accessibilityMatch[1]);
+                                }
+
+                                // Try published text if available
+                                if (short.published?.text) {
+                                    return parseYouTubeDate(short.published.text);
+                                }
+
+                                // Try to extract from overlay metadata
+                                if (short.overlay_metadata?.published_time?.text) {
+                                    return parseYouTubeDate(short.overlay_metadata.published_time.text);
+                                }
+
+                                // Try to extract from metadata
+                                if (short.metadata?.publishDate) {
+                                    return new Date(short.metadata.publishDate).toISOString();
+                                }
+
+                                return null;
+                            };
+
+                            const publishedDate = extractPublishedDate(short);
+
                             return {
                                 ...short,
                                 id: videoId,
                                 title: title,
                                 views: views,
-                                thumbnail_url: short.thumbnail?.[0]?.url || short.thumbnails?.[0]?.url
+                                thumbnail_url: short.thumbnail?.[0]?.url || short.thumbnails?.[0]?.url,
+                                published_at: publishedDate
                             };
                         });
                     
@@ -350,7 +376,8 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                                              short.thumbnail_url ||
                                              `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
                                 published_at: shortInfo.basic_info.publish_date || 
-                                            (short.published?.text ? parseYouTubeDate(short.published.text) : new Date().toISOString()),
+                                             extractPublishedDate(short) ||
+                                             new Date().toISOString(), // fallback to current date only if no other date found
                                 views: shortInfo.basic_info.view_count?.toString() || 
                                        short.views?.replace(/[^0-9]/g, '') || '0',
                                 channel_id: channel.metadata?.external_id || '',
@@ -688,12 +715,41 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                            short.view_count?.text || 
                            (short.accessibility_text?.match(/(\d+[KMB]?\s+views)/) || [])[1] || '0';
 
+              // Extract published date from multiple possible locations
+              const extractPublishedDate = (short) => {
+                  // Try to extract from accessibility text first (usually contains relative date)
+                  const accessibilityMatch = short.accessibility_text?.match(/(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
+                  if (accessibilityMatch) {
+                      return parseYouTubeDate(accessibilityMatch[1]);
+                  }
+
+                  // Try published text if available
+                  if (short.published?.text) {
+                      return parseYouTubeDate(short.published.text);
+                  }
+
+                  // Try to extract from overlay metadata
+                  if (short.overlay_metadata?.published_time?.text) {
+                      return parseYouTubeDate(short.overlay_metadata.published_time.text);
+                  }
+
+                  // Try to extract from metadata
+                  if (short.metadata?.publishDate) {
+                      return new Date(short.metadata.publishDate).toISOString();
+                  }
+
+                  return null;
+              };
+
+              const publishedDate = extractPublishedDate(short);
+
               return {
                   ...short,
                   id: videoId,
                   title: title,
                   views: views,
-                  thumbnail_url: short.thumbnail?.[0]?.url || short.thumbnails?.[0]?.url
+                  thumbnail_url: short.thumbnail?.[0]?.url || short.thumbnails?.[0]?.url,
+                  published_at: publishedDate
               };
           });
       
@@ -754,7 +810,8 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                          short.thumbnail_url ||
                          `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
             published_at: shortInfo.basic_info.publish_date || 
-                        (short.published?.text ? parseYouTubeDate(short.published.text) : new Date().toISOString()),
+                         extractPublishedDate(short) ||
+                         new Date().toISOString(), // fallback to current date only if no other date found
             views: shortInfo.basic_info.view_count?.toString() || 
                    short.views?.replace(/[^0-9]/g, '') || '0',
             channel_id: channel.metadata?.external_id || '',
