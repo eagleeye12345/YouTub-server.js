@@ -211,30 +211,54 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     const startIdx = 0;
                     const endIdx = Math.min(limit, currentBatch.videos.length);
                     
-                    for (const short of currentBatch.videos.slice(startIdx, endIdx)) {
+                    // Filter out any shorts without valid IDs before processing
+                    const validShorts = currentBatch.videos
+                        .slice(startIdx, endIdx)
+                        .filter(short => short && short.id);
+                    
+                    console.log(`Found ${validShorts.length} valid shorts to process`);
+                    
+                    for (const short of validShorts) {
                         try {
+                            if (!short.id) {
+                                console.warn('Skipping short with missing ID');
+                                continue;
+                            }
+
+                            console.log(`Processing short with ID: ${short.id}`);
                             const shortInfo = await yt.getShortsVideoInfo(short.id);
-                            if (!shortInfo || !shortInfo.basic_info) continue;
+                            
+                            if (!shortInfo || !shortInfo.basic_info) {
+                                console.warn(`No basic info found for short ${short.id}`);
+                                continue;
+                            }
 
                             const shortData = {
                                 video_id: shortInfo.basic_info.id,
-                                title: shortInfo.basic_info.title,
-                                description: shortInfo.basic_info.description || '',
+                                title: shortInfo.basic_info.title || short.title?.text || '',
+                                description: shortInfo.basic_info.description || short.description_snippet?.text || '',
                                 thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url || 
-                                             `https://i.ytimg.com/vi/${shortInfo.basic_info.id}/hqdefault.jpg`,
-                                published_at: shortInfo.basic_info.publish_date || new Date().toISOString(),
-                                views: shortInfo.basic_info.view_count?.toString() || '0',
+                                             short.thumbnail?.[0]?.url ||
+                                             `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                                published_at: shortInfo.basic_info.publish_date || 
+                                            (short.published?.text ? parseYouTubeDate(short.published.text) : new Date().toISOString()),
+                                views: shortInfo.basic_info.view_count?.toString() || 
+                                       short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
                                 channel_id: channel.metadata?.external_id || '',
                                 channel_title: channel.metadata?.title || '',
-                                duration: shortInfo.basic_info.duration?.text || '',
+                                duration: shortInfo.basic_info.duration?.text || short.duration?.text || '',
                                 is_short: true,
                                 playability_status: shortInfo.playability_status
                             };
                             
                             videos.push(shortData);
-                            console.log(`Processed short: ${shortData.video_id}`);
+                            console.log(`Successfully processed short: ${shortData.video_id}`);
                         } catch (error) {
-                            console.error(`Error processing short ${short.id}:`, error);
+                            if (error.message.includes('video_id is missing')) {
+                                console.warn(`Skipping short with invalid ID: ${short?.id}`);
+                            } else {
+                                console.error(`Error processing short ${short?.id}:`, error);
+                            }
                             continue;
                         }
                     }
@@ -488,30 +512,54 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
       const startIdx = 0;
       const endIdx = Math.min(limit, currentBatch.videos.length);
       
-      for (const short of currentBatch.videos.slice(startIdx, endIdx)) {
+      // Filter out any shorts without valid IDs before processing
+      const validShorts = currentBatch.videos
+          .slice(startIdx, endIdx)
+          .filter(short => short && short.id);
+      
+      console.log(`Found ${validShorts.length} valid shorts to process`);
+      
+      for (const short of validShorts) {
         try {
+          if (!short.id) {
+            console.warn('Skipping short with missing ID');
+            continue;
+          }
+
+          console.log(`Processing short with ID: ${short.id}`);
           const shortInfo = await yt.getShortsVideoInfo(short.id);
-          if (!shortInfo || !shortInfo.basic_info) continue;
+          
+          if (!shortInfo || !shortInfo.basic_info) {
+            console.warn(`No basic info found for short ${short.id}`);
+            continue;
+          }
 
           const shortData = {
             video_id: shortInfo.basic_info.id,
-            title: shortInfo.basic_info.title,
-            description: shortInfo.basic_info.description || '',
+            title: shortInfo.basic_info.title || short.title?.text || '',
+            description: shortInfo.basic_info.description || short.description_snippet?.text || '',
             thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url || 
-                         `https://i.ytimg.com/vi/${shortInfo.basic_info.id}/hqdefault.jpg`,
-            published_at: shortInfo.basic_info.publish_date || new Date().toISOString(),
-            views: shortInfo.basic_info.view_count?.toString() || '0',
+                         short.thumbnail?.[0]?.url ||
+                         `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+            published_at: shortInfo.basic_info.publish_date || 
+                        (short.published?.text ? parseYouTubeDate(short.published.text) : new Date().toISOString()),
+            views: shortInfo.basic_info.view_count?.toString() || 
+                   short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
             channel_id: channel.metadata?.external_id || '',
             channel_title: channel.metadata?.title || '',
-            duration: shortInfo.basic_info.duration?.text || '',
+            duration: shortInfo.basic_info.duration?.text || short.duration?.text || '',
             is_short: true,
             playability_status: shortInfo.playability_status
           };
           
           shorts.push(shortData);
-          console.log(`Processed short: ${shortData.video_id}`);
+          console.log(`Successfully processed short: ${shortData.video_id}`);
         } catch (error) {
-          console.error(`Error processing short ${short.id}:`, error);
+          if (error.message.includes('video_id is missing')) {
+            console.warn(`Skipping short with invalid ID: ${short?.id}`);
+          } else {
+            console.error(`Error processing short ${short?.id}:`, error);
+          }
           continue;
         }
       }
