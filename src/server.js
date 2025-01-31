@@ -193,26 +193,29 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                 // Skip to requested page
                 while (currentPage < page && currentBatch?.has_continuation) {
                     console.log(`Skipping shorts page ${currentPage}, getting next batch...`);
-                    const nextBatch = await currentBatch.getContinuation();
-                    if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
+                    try {
+                        const nextBatch = await currentBatch.getContinuation();
+                        if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
+                            break;
+                        }
+                        currentBatch = nextBatch;
+                        currentPage++;
+                    } catch (error) {
+                        console.error('Error getting continuation:', error);
                         break;
                     }
-                    currentBatch = nextBatch;
-                    currentPage++;
                 }
 
                 // Process current page
                 if (currentBatch?.videos) {
                     const startIdx = 0;
-                    const endIdx = limit;
+                    const endIdx = Math.min(limit, currentBatch.videos.length);
                     
                     for (const short of currentBatch.videos.slice(startIdx, endIdx)) {
-                        // Log the raw short object to debug
-                        console.log('Raw short data:', JSON.stringify(short, null, 2));
-                        
-                        // Get detailed info for each short
                         try {
-                            const shortInfo = await yt.getInfo(short.id);
+                            const shortInfo = await yt.getShortsVideoInfo(short.id);
+                            if (!shortInfo || !shortInfo.basic_info) continue;
+
                             const shortData = {
                                 video_id: shortInfo.basic_info.id,
                                 title: shortInfo.basic_info.title,
@@ -222,29 +225,17 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                                 published_at: shortInfo.basic_info.publish_date || new Date().toISOString(),
                                 views: shortInfo.basic_info.view_count?.toString() || '0',
                                 channel_id: channel.metadata?.external_id || '',
-                                is_short: true
+                                channel_title: channel.metadata?.title || '',
+                                duration: shortInfo.basic_info.duration?.text || '',
+                                is_short: true,
+                                playability_status: shortInfo.playability_status
                             };
                             
                             videos.push(shortData);
                             console.log(`Processed short: ${shortData.video_id}`);
-                        } catch (shortError) {
-                            console.error(`Error getting info for short:`, shortError);
-                            // If getInfo fails, try to use the basic data
-                            if (short.id) {
-                                const shortData = {
-                                    video_id: short.id,
-                                    title: short.title?.text || '',
-                                    description: short.description_snippet?.text || '',
-                                    thumbnail_url: short.thumbnail?.[0]?.url || 
-                                                 `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
-                                    published_at: new Date().toISOString(),
-                                    views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
-                                    channel_id: channel.metadata?.external_id || '',
-                                    is_short: true
-                                };
-                                videos.push(shortData);
-                                console.log(`Added short with basic data: ${shortData.video_id}`);
-                            }
+                        } catch (error) {
+                            console.error(`Error processing short ${short.id}:`, error);
+                            continue;
                         }
                     }
 
@@ -303,37 +294,21 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                         const videoInfo = await yt.getInfo(video.id);
                         
                         // Try to get the most accurate date
-                        let publishDate;
-                        
-                        // Parse primary_info date if available
-                        if (videoInfo.primary_info?.published?.text) {
-                            const primaryInfoDate = videoInfo.primary_info.published.text;
-                            // Remove "Premiered" prefix if present
-                            const cleanDate = primaryInfoDate.replace(/^Premiered\s+/, '');
-                            const parsedDate = new Date(cleanDate);
-                            if (!isNaN(parsedDate.getTime())) {
-                                publishDate = parsedDate.toISOString();
-                            }
-                        }
-
-                        // Fallback to other sources if primary_info date parsing failed
+                        let publishDate = videoInfo.basic_info?.publish_date;
                         if (!publishDate) {
-                            if (videoInfo.basic_info?.publish_date && !videoInfo.basic_info.publish_date.includes('ago')) {
-                                publishDate = videoInfo.basic_info.publish_date;
-                            } else if (videoInfo.metadata?.publishDate) {
-                                publishDate = videoInfo.metadata.publishDate;
-                            } else if (videoInfo.microformat?.publishDate) {
-                                publishDate = videoInfo.microformat.publishDate;
+                            if (videoInfo.primary_info?.published?.text) {
+                                const cleanDate = videoInfo.primary_info.published.text.replace(/^Premiered\s+/, '');
+                                const parsedDate = new Date(cleanDate);
+                                if (!isNaN(parsedDate.getTime())) {
+                                    publishDate = parsedDate.toISOString();
+                                }
                             } else if (video.published?.text) {
                                 publishDate = parseYouTubeDate(video.published.text);
                             } else {
-                                console.warn(`No publish date found for video ${video.id}`);
                                 publishDate = new Date().toISOString();
                             }
                         }
 
-                        console.log(`Final parsed date for video ${video.id}: ${publishDate}`);
-                        
                         const videoData = {
                             video_id: video.id,
                             title: videoInfo.basic_info?.title || video.title?.text || '',
@@ -347,13 +322,14 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                             views: video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
                             channel_id: channel.metadata?.external_id || '',
                             channel_title: channel.metadata?.title || '',
-                            duration: videoInfo.basic_info?.duration?.text || video.duration?.text || ''
+                            duration: videoInfo.basic_info?.duration?.text || video.duration?.text || '',
+                            is_short: false,
+                            playability_status: videoInfo.playability_status
                         };
                         
                         videos.push(videoData);
                         console.log(`Added video ${videos.length}: ${videoData.video_id}`);
                         
-                        // If we've reached the limit, stop processing more videos
                         if (videos.length >= limit) {
                             break;
                         }
@@ -370,13 +346,11 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
             // Check if there are actually more videos
             try {
                 if (currentBatch?.has_continuation) {
-                    // Try to peek at the next batch
                     const nextBatch = await currentBatch.getContinuation();
                     hasMore = !!(nextBatch?.videos?.length);
                 }
             } catch (error) {
                 console.error('Error checking for more videos:', error);
-                // Assume there might be more if we can't check
                 hasMore = currentBatch?.has_continuation || false;
             }
         }
@@ -437,6 +411,10 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
 app.get('/api/shorts/:videoId', async (req, res) => {
   try {
     const shortsInfo = await yt.getShortsVideoInfo(req.params.videoId);
+    if (!shortsInfo || !shortsInfo.basic_info) {
+      return res.status(404).json({ error: 'Short not found or not available' });
+    }
+
     const simplifiedInfo = {
       video_id: shortsInfo.basic_info?.id,
       title: shortsInfo.basic_info?.title,
@@ -447,7 +425,9 @@ app.get('/api/shorts/:videoId', async (req, res) => {
       channel_id: shortsInfo.basic_info?.channel?.id,
       channel_title: shortsInfo.basic_info?.channel?.name,
       channel_thumbnail: shortsInfo.basic_info?.channel?.thumbnails?.[0]?.url,
-      duration: shortsInfo.basic_info?.duration?.text
+      duration: shortsInfo.basic_info?.duration?.text,
+      is_short: true,
+      playability_status: shortsInfo.playability_status
     };
     res.json(simplifiedInfo);
   } catch (error) {
@@ -456,101 +436,101 @@ app.get('/api/shorts/:videoId', async (req, res) => {
   }
 });
 
-// Get channel shorts endpoint
+// Get channel shorts endpoint with pagination
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
   try {
-    console.log('Fetching channel shorts:', req.params.channelId);
-    const channel = await yt.getChannel(req.params.channelId);
-    const shorts = [];
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 30;
     
+    console.log('Fetching channel shorts:', req.params.channelId, `(page ${page}, limit ${limit})`);
+    const channel = await yt.getChannel(req.params.channelId);
+    
+    if (!channel.has_shorts) {
+      return res.json({
+        shorts: [],
+        pagination: {
+          has_more: false,
+          current_page: page,
+          items_per_page: limit,
+          total_items: 0
+        }
+      });
+    }
+
     // Get initial shorts tab
     let shortsTab = await channel.getShorts();
-    console.log('Initial shorts tab data:', JSON.stringify(shortsTab, null, 2));
-    
-    let hasMore = true;
-    while (hasMore && shortsTab?.videos?.length) {
-      console.log(`Processing batch of ${shortsTab.videos.length} shorts`);
+    console.log('Initial shorts tab loaded');
+
+    // Skip to requested page if needed
+    let currentPage = 1;
+    let currentBatch = shortsTab;
+    let shorts = [];
+    let hasMore = false;
+
+    // Skip to the requested page
+    while (currentPage < page && currentBatch?.has_continuation) {
+      console.log(`Skipping to page ${currentPage}...`);
+      try {
+        const nextBatch = await currentBatch.getContinuation();
+        if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
+          break;
+        }
+        currentBatch = nextBatch;
+        currentPage++;
+      } catch (error) {
+        console.error('Error getting continuation:', error);
+        break;
+      }
+    }
+
+    // Process current page
+    if (currentBatch?.videos) {
+      const startIdx = 0;
+      const endIdx = Math.min(limit, currentBatch.videos.length);
       
-      for (const short of shortsTab.videos) {
+      for (const short of currentBatch.videos.slice(startIdx, endIdx)) {
         try {
           const shortInfo = await yt.getShortsVideoInfo(short.id);
-          
-          // Try to get the most accurate date
-          let publishDate;
-          
-          // Parse primary_info date if available
-          if (shortInfo.primary_info?.published?.text) {
-            const primaryInfoDate = shortInfo.primary_info.published.text;
-            // Remove "Premiered" prefix if present
-            const cleanDate = primaryInfoDate.replace(/^Premiered\s+/, '');
-            const parsedDate = new Date(cleanDate);
-            if (!isNaN(parsedDate.getTime())) {
-              publishDate = parsedDate.toISOString();
-            }
-          }
+          if (!shortInfo || !shortInfo.basic_info) continue;
 
-          // Fallback to other date sources
-          if (!publishDate) {
-            if (shortInfo.basic_info?.publish_date) {
-              publishDate = shortInfo.basic_info.publish_date;
-            } else if (short.published?.text) {
-              publishDate = parseYouTubeDate(short.published.text);
-            } else {
-              console.warn(`No publish date found for short ${short.id}`);
-              publishDate = new Date().toISOString();
-            }
-          }
-
-          console.log(`Final parsed date for short ${short.id}: ${publishDate}`);
-          
           const shortData = {
-            video_id: short.id,
-            title: shortInfo.basic_info?.title || short.title?.text || '',
-            description: shortInfo.basic_info?.description || 
-                        shortInfo.primary_info?.description?.text ||
-                        short.description_snippet?.text || '',
-            thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
-                         short.thumbnail?.[0]?.url ||
-                         `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
-            published_at: publishDate,
-            views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+            video_id: shortInfo.basic_info.id,
+            title: shortInfo.basic_info.title,
+            description: shortInfo.basic_info.description || '',
+            thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url || 
+                         `https://i.ytimg.com/vi/${shortInfo.basic_info.id}/hqdefault.jpg`,
+            published_at: shortInfo.basic_info.publish_date || new Date().toISOString(),
+            views: shortInfo.basic_info.view_count?.toString() || '0',
             channel_id: channel.metadata?.external_id || '',
             channel_title: channel.metadata?.title || '',
-            duration: shortInfo.basic_info?.duration?.text || short.duration?.text || ''
+            duration: shortInfo.basic_info.duration?.text || '',
+            is_short: true,
+            playability_status: shortInfo.playability_status
           };
           
           shorts.push(shortData);
-          console.log(`Added short ${shorts.length}: ${shortData.video_id}`);
-        } catch (shortError) {
-          console.error(`Error processing short ${short.id}:`, shortError);
+          console.log(`Processed short: ${shortData.video_id}`);
+        } catch (error) {
+          console.error(`Error processing short ${short.id}:`, error);
           continue;
         }
       }
 
-      try {
-        // Check for continuation
-        if (shortsTab.has_continuation && typeof shortsTab.getContinuation === 'function') {
-          console.log('Fetching next batch of shorts...');
-          const nextBatch = await shortsTab.getContinuation();
-          if (nextBatch && nextBatch.videos && nextBatch.videos.length > 0) {
-            shortsTab = nextBatch;
-            console.log(`Successfully loaded next batch with ${shortsTab.videos.length} shorts`);
-          } else {
-            console.log('No more shorts in next batch');
-            hasMore = false;
-          }
-        } else {
-          console.log('No more shorts to load');
-          hasMore = false;
-        }
-      } catch (continuationError) {
-        console.error('Error getting continuation:', continuationError);
-        hasMore = false;
-      }
+      // Check if more shorts available
+      hasMore = currentBatch.has_continuation && 
+                typeof currentBatch.getContinuation === 'function';
     }
 
-    console.log(`Total shorts found: ${shorts.length}`);
-    res.json(shorts);
+    res.json({
+      shorts,
+      pagination: {
+        has_more: hasMore,
+        current_page: page,
+        items_per_page: limit,
+        total_items: shorts.length
+      }
+    });
+
   } catch (error) {
     console.error('Channel shorts error:', error);
     res.status(500).json({ error: error.message });
