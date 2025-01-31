@@ -185,6 +185,14 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                 // Get shorts tab
                 let shortsTab = await channel.getShorts();
                 console.log('Initial shorts tab loaded');
+                
+                // Debug the shorts tab structure
+                console.log('Shorts tab structure:', JSON.stringify({
+                    has_videos: !!shortsTab?.videos,
+                    video_count: shortsTab?.videos?.length,
+                    first_video: shortsTab?.videos?.[0],
+                    has_continuation: !!shortsTab?.has_continuation
+                }, null, 2));
 
                 // Get continuation if not on first page
                 let currentPage = 1;
@@ -195,6 +203,13 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     console.log(`Skipping shorts page ${currentPage}, getting next batch...`);
                     try {
                         const nextBatch = await currentBatch.getContinuation();
+                        console.log(`Next batch structure:`, JSON.stringify({
+                            has_videos: !!nextBatch?.videos,
+                            video_count: nextBatch?.videos?.length,
+                            first_video: nextBatch?.videos?.[0],
+                            has_continuation: !!nextBatch?.has_continuation
+                        }, null, 2));
+
                         if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
                             break;
                         }
@@ -211,35 +226,63 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     const startIdx = 0;
                     const endIdx = Math.min(limit, currentBatch.videos.length);
                     
+                    // Log the raw videos array before filtering
+                    console.log('Raw videos before filtering:', JSON.stringify(currentBatch.videos.slice(startIdx, endIdx), null, 2));
+                    
                     // Filter out any shorts without valid IDs before processing
                     const validShorts = currentBatch.videos
                         .slice(startIdx, endIdx)
-                        .filter(short => short && short.id);
+                        .filter(short => {
+                            // Check all possible ID locations
+                            const hasId = short && (
+                                short.id || 
+                                short.videoId || 
+                                short.video_id || 
+                                (short.navigationEndpoint?.watchEndpoint?.videoId) ||
+                                (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1]
+                            );
+                            if (!hasId) {
+                                console.log('Invalid short object:', JSON.stringify(short, null, 2));
+                            }
+                            return hasId;
+                        })
+                        .map(short => ({
+                            ...short,
+                            id: short.id || 
+                                short.videoId || 
+                                short.video_id || 
+                                short.navigationEndpoint?.watchEndpoint?.videoId ||
+                                (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1]
+                        }));
                     
                     console.log(`Found ${validShorts.length} valid shorts to process`);
                     
                     for (const short of validShorts) {
                         try {
-                            if (!short.id) {
+                            const videoId = short.id;
+                            if (!videoId) {
                                 console.warn('Skipping short with missing ID');
                                 continue;
                             }
 
-                            console.log(`Processing short with ID: ${short.id}`);
-                            const shortInfo = await yt.getShortsVideoInfo(short.id);
+                            console.log(`Processing short with ID: ${videoId}`);
+                            const shortInfo = await yt.getShortsVideoInfo(videoId);
                             
                             if (!shortInfo || !shortInfo.basic_info) {
-                                console.warn(`No basic info found for short ${short.id}`);
+                                console.warn(`No basic info found for short ${videoId}`);
                                 continue;
                             }
 
                             const shortData = {
-                                video_id: shortInfo.basic_info.id,
+                                video_id: videoId,
                                 title: shortInfo.basic_info.title || short.title?.text || '',
-                                description: shortInfo.basic_info.description || short.description_snippet?.text || '',
+                                description: shortInfo.basic_info.description || 
+                                           short.description_snippet?.text || 
+                                           short.description?.text || '',
                                 thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url || 
                                              short.thumbnail?.[0]?.url ||
-                                             `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                                             short.thumbnails?.[0]?.url ||
+                                             `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
                                 published_at: shortInfo.basic_info.publish_date || 
                                             (short.published?.text ? parseYouTubeDate(short.published.text) : new Date().toISOString()),
                                 views: shortInfo.basic_info.view_count?.toString() || 
@@ -470,6 +513,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
     const channel = await yt.getChannel(req.params.channelId);
     
     if (!channel.has_shorts) {
+      console.log('Channel has no shorts tab');
       return res.json({
         shorts: [],
         pagination: {
@@ -484,6 +528,14 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
     // Get initial shorts tab
     let shortsTab = await channel.getShorts();
     console.log('Initial shorts tab loaded');
+    
+    // Debug the shorts tab structure
+    console.log('Shorts tab structure:', JSON.stringify({
+        has_videos: !!shortsTab?.videos,
+        video_count: shortsTab?.videos?.length,
+        first_video: shortsTab?.videos?.[0],
+        has_continuation: !!shortsTab?.has_continuation
+    }, null, 2));
 
     // Skip to requested page if needed
     let currentPage = 1;
@@ -496,6 +548,13 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
       console.log(`Skipping to page ${currentPage}...`);
       try {
         const nextBatch = await currentBatch.getContinuation();
+        console.log(`Next batch structure:`, JSON.stringify({
+            has_videos: !!nextBatch?.videos,
+            video_count: nextBatch?.videos?.length,
+            first_video: nextBatch?.videos?.[0],
+            has_continuation: !!nextBatch?.has_continuation
+        }, null, 2));
+
         if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
           break;
         }
@@ -512,35 +571,63 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
       const startIdx = 0;
       const endIdx = Math.min(limit, currentBatch.videos.length);
       
+      // Log the raw videos array before filtering
+      console.log('Raw videos before filtering:', JSON.stringify(currentBatch.videos.slice(startIdx, endIdx), null, 2));
+      
       // Filter out any shorts without valid IDs before processing
       const validShorts = currentBatch.videos
           .slice(startIdx, endIdx)
-          .filter(short => short && short.id);
+          .filter(short => {
+              // Check all possible ID locations
+              const hasId = short && (
+                  short.id || 
+                  short.videoId || 
+                  short.video_id || 
+                  (short.navigationEndpoint?.watchEndpoint?.videoId) ||
+                  (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1]
+              );
+              if (!hasId) {
+                  console.log('Invalid short object:', JSON.stringify(short, null, 2));
+              }
+              return hasId;
+          })
+          .map(short => ({
+              ...short,
+              id: short.id || 
+                  short.videoId || 
+                  short.video_id || 
+                  short.navigationEndpoint?.watchEndpoint?.videoId ||
+                  (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1]
+          }));
       
       console.log(`Found ${validShorts.length} valid shorts to process`);
       
       for (const short of validShorts) {
         try {
-          if (!short.id) {
+          const videoId = short.id;
+          if (!videoId) {
             console.warn('Skipping short with missing ID');
             continue;
           }
 
-          console.log(`Processing short with ID: ${short.id}`);
-          const shortInfo = await yt.getShortsVideoInfo(short.id);
+          console.log(`Processing short with ID: ${videoId}`);
+          const shortInfo = await yt.getShortsVideoInfo(videoId);
           
           if (!shortInfo || !shortInfo.basic_info) {
-            console.warn(`No basic info found for short ${short.id}`);
+            console.warn(`No basic info found for short ${videoId}`);
             continue;
           }
 
           const shortData = {
-            video_id: shortInfo.basic_info.id,
+            video_id: videoId,
             title: shortInfo.basic_info.title || short.title?.text || '',
-            description: shortInfo.basic_info.description || short.description_snippet?.text || '',
+            description: shortInfo.basic_info.description || 
+                        short.description_snippet?.text || 
+                        short.description?.text || '',
             thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url || 
                          short.thumbnail?.[0]?.url ||
-                         `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                         short.thumbnails?.[0]?.url ||
+                         `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
             published_at: shortInfo.basic_info.publish_date || 
                         (short.published?.text ? parseYouTubeDate(short.published.text) : new Date().toISOString()),
             views: shortInfo.basic_info.view_count?.toString() || 
