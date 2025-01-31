@@ -614,7 +614,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             }
         }
 
-        // If no date found, return null instead of current date
+        // Return null instead of current date if no date found
         return null;
     };
 
@@ -687,10 +687,10 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                   short.id || 
                   short.videoId || 
                   short.video_id || 
-                  (short.on_tap_endpoint?.payload?.videoId) ||  // Add this path
+                  (short.on_tap_endpoint?.payload?.videoId) ||
                   (short.navigationEndpoint?.watchEndpoint?.videoId) ||
                   (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
-                  (short.thumbnail?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||  // Add this path
+                  (short.thumbnail?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
                   (typeof short === 'object' && Object.values(short).find(val => 
                       typeof val === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(val)
                   ))
@@ -707,7 +707,8 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                       watchEndpoint: short.navigationEndpoint?.watchEndpoint?.videoId,
                       thumbnail_url: short.thumbnail?.[0]?.url || short.thumbnails?.[0]?.url,
                       title: short.overlay_metadata?.primary_text?.text || short.title?.text,
-                      views: short.overlay_metadata?.secondary_text?.text || short.view_count?.text
+                      views: short.overlay_metadata?.secondary_text?.text || short.view_count?.text,
+                      published: short.published?.text || short.accessibility_text
                   }, null, 2));
               }
               return hasId;
@@ -716,10 +717,10 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
               const videoId = short.id || 
                   short.videoId || 
                   short.video_id || 
-                  short.on_tap_endpoint?.payload?.videoId ||  // Add this path
+                  short.on_tap_endpoint?.payload?.videoId ||
                   short.navigationEndpoint?.watchEndpoint?.videoId ||
                   (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
-                  (short.thumbnail?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||  // Add this path
+                  (short.thumbnail?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
                   Object.values(short).find(val => 
                       typeof val === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(val)
                   );
@@ -757,39 +758,13 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
           }
 
           console.log(`Processing short with ID: ${videoId}`);
-          const shortInfo = await yt.getShortsVideoInfo(videoId);
+          const shortInfo = await yt.getShortsVideoInfo(videoId).catch(async (error) => {
+            console.warn(`Failed to get shorts info for ${videoId}, trying fallback: ${error.message}`);
+            return yt.getInfo(videoId);
+          });
           
           if (!shortInfo || !shortInfo.basic_info) {
-            console.warn(`No basic info found for short ${videoId}, trying fallback to regular video info`);
-            // Try fallback to regular video info
-            try {
-                const videoInfo = await yt.getInfo(videoId);
-                if (videoInfo && videoInfo.basic_info) {
-                    const shortData = {
-                        video_id: videoId,
-                        title: videoInfo.basic_info.title || short.title || '',
-                        description: videoInfo.basic_info.description || 
-                                   short.description_snippet?.text || 
-                                   short.description?.text || '',
-                        thumbnail_url: videoInfo.basic_info.thumbnail?.[0]?.url || 
-                                     short.thumbnail_url ||
-                                     `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                        published_at: videoInfo.basic_info.publish_date || 
-                                    (short.published?.text ? parseYouTubeDate(short.published.text) : new Date().toISOString()),
-                        views: videoInfo.basic_info.view_count?.toString() || 
-                               short.views?.replace(/[^0-9]/g, '') || '0',
-                        channel_id: channel.metadata?.external_id || '',
-                        channel_title: channel.metadata?.title || '',
-                        duration: videoInfo.basic_info.duration?.text || short.duration?.text || '',
-                        is_short: true,
-                        accessibility_text: short.accessibility_text || ''
-                    };
-                    shorts.push(shortData);
-                    console.log(`Successfully processed short using fallback: ${shortData.video_id}`);
-                }
-            } catch (fallbackError) {
-                console.error(`Fallback also failed for short ${videoId}:`, fallbackError);
-            }
+            console.warn(`No info found for short ${videoId}, skipping`);
             continue;
           }
           
@@ -804,7 +779,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                          `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
             published_at: shortInfo.basic_info.publish_date || 
                          extractPublishedDate(short) ||
-                         new Date().toISOString(), // fallback to current date only if no other date found
+                         null, // Don't use current date as fallback
             views: shortInfo.basic_info.view_count?.toString() || 
                    short.views?.replace(/[^0-9]/g, '') || '0',
             channel_id: channel.metadata?.external_id || '',
@@ -818,11 +793,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
           shorts.push(shortData);
           console.log(`Successfully processed short: ${shortData.video_id}`);
         } catch (error) {
-          if (error.message.includes('video_id is missing')) {
-            console.warn(`Skipping short with invalid ID: ${short?.id}`);
-          } else {
-            console.error(`Error processing short ${short?.id}:`, error);
-          }
+          console.error(`Error processing short ${short?.id}:`, error);
           continue;
         }
       }
