@@ -199,7 +199,7 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                 while (currentPage < page && currentBatch?.has_continuation) {
                     console.log(`Skipping shorts page ${currentPage}, getting next batch...`);
                     try {
-                        const nextBatch = await currentBatch.getContinuation();
+                    const nextBatch = await currentBatch.getContinuation();
                         console.log(`Next batch structure:`, JSON.stringify({
                             has_videos: !!nextBatch?.videos,
                             video_count: nextBatch?.videos?.length,
@@ -207,11 +207,11 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                             has_continuation: !!nextBatch?.has_continuation
                         }, null, 2));
 
-                        if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
-                            break;
-                        }
-                        currentBatch = nextBatch;
-                        currentPage++;
+                    if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
+                        break;
+                    }
+                    currentBatch = nextBatch;
+                    currentPage++;
                     } catch (error) {
                         console.error('Error getting continuation:', error);
                         break;
@@ -432,19 +432,19 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                         // Try to get the most accurate date
                         let publishDate = videoInfo.basic_info?.publish_date;
                         if (!publishDate) {
-                            if (videoInfo.primary_info?.published?.text) {
+                        if (videoInfo.primary_info?.published?.text) {
                                 const cleanDate = videoInfo.primary_info.published.text.replace(/^Premiered\s+/, '');
-                                const parsedDate = new Date(cleanDate);
-                                if (!isNaN(parsedDate.getTime())) {
-                                    publishDate = parsedDate.toISOString();
-                                }
+                            const parsedDate = new Date(cleanDate);
+                            if (!isNaN(parsedDate.getTime())) {
+                                publishDate = parsedDate.toISOString();
+                            }
                             } else if (video.published?.text) {
                                 publishDate = parseYouTubeDate(video.published.text);
                             } else {
                                 publishDate = new Date().toISOString();
                             }
                         }
-
+                        
                         const videoData = {
                             video_id: video.id,
                             title: videoInfo.basic_info?.title || video.title?.text || '',
@@ -577,10 +577,18 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
   try {
     // Helper function to extract published date from shorts data
     const extractPublishedDate = (short) => {
-        // Try to extract from accessibility text first (usually contains relative date)
-        const accessibilityMatch = short.accessibility_text?.match(/(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
-        if (accessibilityMatch) {
-            return parseYouTubeDate(accessibilityMatch[1]);
+        // Try to extract from accessibility text first (most reliable for shorts)
+        if (short.accessibility_text) {
+            // Look for date patterns in accessibility text
+            const dateMatch = short.accessibility_text.match(/(?:uploaded |posted |published )?(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
+            if (dateMatch) {
+                return parseYouTubeDate(dateMatch[1]);
+            }
+        }
+
+        // Try to get date from video metadata
+        if (short.metadata?.publishDate) {
+            return new Date(short.metadata.publishDate).toISOString();
         }
 
         // Try published text if available
@@ -588,16 +596,25 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             return parseYouTubeDate(short.published.text);
         }
 
+        // Try to extract from basic info
+        if (short.basic_info?.publish_date) {
+            return new Date(short.basic_info.publish_date).toISOString();
+        }
+
         // Try to extract from overlay metadata
         if (short.overlay_metadata?.published_time?.text) {
             return parseYouTubeDate(short.overlay_metadata.published_time.text);
         }
 
-        // Try to extract from metadata
-        if (short.metadata?.publishDate) {
-            return new Date(short.metadata.publishDate).toISOString();
+        // Try to extract from description
+        if (short.description_snippet?.text) {
+            const descMatch = short.description_snippet.text.match(/(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
+            if (descMatch) {
+                return parseYouTubeDate(descMatch[1]);
+            }
         }
 
+        // If no date found, return null instead of current date
         return null;
     };
 
@@ -627,7 +644,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         }
       });
     }
-
+    
     // Get initial shorts tab
     console.log('Attempting to get shorts tab...');
     let shortsTab = await channel.getShorts();
@@ -775,7 +792,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             }
             continue;
           }
-
+          
           const shortData = {
             video_id: videoId,
             title: shortInfo.basic_info.title || short.title || '',
