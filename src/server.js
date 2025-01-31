@@ -189,33 +189,16 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                 // Get continuation if not on first page
                 let currentPage = 1;
                 let currentBatch = shortsTab;
-                let continuationAttempts = 0;
-                const MAX_CONTINUATION_ATTEMPTS = 3;
 
                 // Skip to requested page
                 while (currentPage < page && currentBatch?.has_continuation) {
                     console.log(`Skipping shorts page ${currentPage}, getting next batch...`);
-                    try {
-                        const nextBatch = await currentBatch.getContinuation();
-                        if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
-                            console.log('No more shorts in continuation');
-                            break;
-                        }
-                        currentBatch = nextBatch;
-                        currentPage++;
-                        continuationAttempts = 0;
-                    } catch (continuationError) {
-                        console.error(`Shorts continuation error on page ${currentPage}:`, continuationError);
-                        continuationAttempts++;
-                        
-                        if (continuationAttempts >= MAX_CONTINUATION_ATTEMPTS) {
-                            console.error(`Failed to get shorts continuation after ${MAX_CONTINUATION_ATTEMPTS} attempts`);
-                            break;
-                        }
-                        
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        continue;
+                    const nextBatch = await currentBatch.getContinuation();
+                    if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
+                        break;
                     }
+                    currentBatch = nextBatch;
+                    currentPage++;
                 }
 
                 // Process current page
@@ -224,26 +207,44 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     const endIdx = limit;
                     
                     for (const short of currentBatch.videos.slice(startIdx, endIdx)) {
+                        // Log the raw short object to debug
+                        console.log('Raw short data:', JSON.stringify(short, null, 2));
+                        
+                        // Get detailed info for each short
                         try {
+                            const shortInfo = await yt.getInfo(short.id);
                             const shortData = {
-                                video_id: short.id,
-                                title: short.title?.text || '',
-                                description: short.description_snippet?.text || '',
-                                thumbnail_url: short.thumbnail?.[0]?.url || 
-                                             `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
-                                published_at: parseYouTubeDate(short.published?.text) || new Date().toISOString(),
-                                views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                                video_id: shortInfo.basic_info.id,
+                                title: shortInfo.basic_info.title,
+                                description: shortInfo.basic_info.description || '',
+                                thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url || 
+                                             `https://i.ytimg.com/vi/${shortInfo.basic_info.id}/hqdefault.jpg`,
+                                published_at: shortInfo.basic_info.publish_date || new Date().toISOString(),
+                                views: shortInfo.basic_info.view_count?.toString() || '0',
                                 channel_id: channel.metadata?.external_id || '',
-                                channel_title: channel.metadata?.title || '',
-                                duration: short.duration?.text || '',
                                 is_short: true
                             };
                             
                             videos.push(shortData);
-                            console.log(`Added short ${videos.length}: ${shortData.video_id}`);
+                            console.log(`Processed short: ${shortData.video_id}`);
                         } catch (shortError) {
-                            console.error(`Error processing short ${short.id}:`, shortError);
-                            continue;
+                            console.error(`Error getting info for short:`, shortError);
+                            // If getInfo fails, try to use the basic data
+                            if (short.id) {
+                                const shortData = {
+                                    video_id: short.id,
+                                    title: short.title?.text || '',
+                                    description: short.description_snippet?.text || '',
+                                    thumbnail_url: short.thumbnail?.[0]?.url || 
+                                                 `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                                    published_at: new Date().toISOString(),
+                                    views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                                    channel_id: channel.metadata?.external_id || '',
+                                    is_short: true
+                                };
+                                videos.push(shortData);
+                                console.log(`Added short with basic data: ${shortData.video_id}`);
+                            }
                         }
                     }
 
@@ -251,10 +252,9 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     hasMore = currentBatch.has_continuation && 
                              typeof currentBatch.getContinuation === 'function';
                 }
-
             } catch (shortsError) {
                 console.error('Error fetching shorts:', shortsError);
-                throw shortsError; // Let the error handler deal with it
+                throw shortsError;
             }
         } else {
             // Existing video fetching logic...
