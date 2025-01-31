@@ -512,6 +512,14 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
     console.log('Fetching channel shorts:', req.params.channelId, `(page ${page}, limit ${limit})`);
     const channel = await yt.getChannel(req.params.channelId);
     
+    // Log channel metadata
+    console.log('Channel metadata:', JSON.stringify({
+        id: channel.metadata?.external_id,
+        title: channel.metadata?.title,
+        has_shorts: channel.has_shorts,
+        available_tabs: channel.available_tabs
+    }, null, 2));
+
     if (!channel.has_shorts) {
       console.log('Channel has no shorts tab');
       return res.json({
@@ -526,15 +534,19 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
     }
 
     // Get initial shorts tab
+    console.log('Attempting to get shorts tab...');
     let shortsTab = await channel.getShorts();
     console.log('Initial shorts tab loaded');
     
-    // Debug the shorts tab structure
-    console.log('Shorts tab structure:', JSON.stringify({
+    // Debug the shorts tab structure in detail
+    console.log('Detailed shorts tab structure:', JSON.stringify({
         has_videos: !!shortsTab?.videos,
         video_count: shortsTab?.videos?.length,
         first_video: shortsTab?.videos?.[0],
-        has_continuation: !!shortsTab?.has_continuation
+        has_continuation: !!shortsTab?.has_continuation,
+        content_type: shortsTab?.content_type,
+        page_type: shortsTab?.page_type,
+        raw_data: shortsTab?.videos?.slice(0, 1) // Log first video's raw data
     }, null, 2));
 
     // Skip to requested page if needed
@@ -543,36 +555,16 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
     let shorts = [];
     let hasMore = false;
 
-    // Skip to the requested page
-    while (currentPage < page && currentBatch?.has_continuation) {
-      console.log(`Skipping to page ${currentPage}...`);
-      try {
-        const nextBatch = await currentBatch.getContinuation();
-        console.log(`Next batch structure:`, JSON.stringify({
-            has_videos: !!nextBatch?.videos,
-            video_count: nextBatch?.videos?.length,
-            first_video: nextBatch?.videos?.[0],
-            has_continuation: !!nextBatch?.has_continuation
-        }, null, 2));
-
-        if (!nextBatch || !nextBatch.videos || nextBatch.videos.length === 0) {
-          break;
-        }
-        currentBatch = nextBatch;
-        currentPage++;
-      } catch (error) {
-        console.error('Error getting continuation:', error);
-        break;
-      }
-    }
-
     // Process current page
     if (currentBatch?.videos) {
       const startIdx = 0;
       const endIdx = Math.min(limit, currentBatch.videos.length);
       
       // Log the raw videos array before filtering
-      console.log('Raw videos before filtering:', JSON.stringify(currentBatch.videos.slice(startIdx, endIdx), null, 2));
+      console.log('Raw videos before filtering:', JSON.stringify({
+          total_videos: currentBatch.videos.length,
+          sample_videos: currentBatch.videos.slice(startIdx, Math.min(3, endIdx)) // Log first 3 videos for debugging
+      }, null, 2));
       
       // Filter out any shorts without valid IDs before processing
       const validShorts = currentBatch.videos
@@ -584,21 +576,38 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                   short.videoId || 
                   short.video_id || 
                   (short.navigationEndpoint?.watchEndpoint?.videoId) ||
-                  (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1]
+                  (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
+                  (typeof short === 'object' && Object.values(short).find(val => 
+                      typeof val === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(val)
+                  ))
               );
               if (!hasId) {
                   console.log('Invalid short object:', JSON.stringify(short, null, 2));
+              } else {
+                  console.log('Valid short found:', JSON.stringify({
+                      id: short.id,
+                      videoId: short.videoId,
+                      video_id: short.video_id,
+                      watchEndpoint: short.navigationEndpoint?.watchEndpoint?.videoId,
+                      thumbnail_url: short.thumbnails?.[0]?.url
+                  }, null, 2));
               }
               return hasId;
           })
-          .map(short => ({
-              ...short,
-              id: short.id || 
+          .map(short => {
+              const videoId = short.id || 
                   short.videoId || 
                   short.video_id || 
                   short.navigationEndpoint?.watchEndpoint?.videoId ||
-                  (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1]
-          }));
+                  (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
+                  Object.values(short).find(val => 
+                      typeof val === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(val)
+                  );
+              return {
+                  ...short,
+                  id: videoId
+              };
+          });
       
       console.log(`Found ${validShorts.length} valid shorts to process`);
       
@@ -614,7 +623,36 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
           const shortInfo = await yt.getShortsVideoInfo(videoId);
           
           if (!shortInfo || !shortInfo.basic_info) {
-            console.warn(`No basic info found for short ${videoId}`);
+            console.warn(`No basic info found for short ${videoId}, trying fallback to regular video info`);
+            // Try fallback to regular video info
+            try {
+                const videoInfo = await yt.getInfo(videoId);
+                if (videoInfo && videoInfo.basic_info) {
+                    const shortData = {
+                        video_id: videoId,
+                        title: videoInfo.basic_info.title || short.title?.text || '',
+                        description: videoInfo.basic_info.description || 
+                                   short.description_snippet?.text || 
+                                   short.description?.text || '',
+                        thumbnail_url: videoInfo.basic_info.thumbnail?.[0]?.url || 
+                                     short.thumbnail?.[0]?.url ||
+                                     short.thumbnails?.[0]?.url ||
+                                     `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                        published_at: videoInfo.basic_info.publish_date || 
+                                    (short.published?.text ? parseYouTubeDate(short.published.text) : new Date().toISOString()),
+                        views: videoInfo.basic_info.view_count?.toString() || 
+                               short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        duration: videoInfo.basic_info.duration?.text || short.duration?.text || '',
+                        is_short: true
+                    };
+                    shorts.push(shortData);
+                    console.log(`Successfully processed short using fallback: ${shortData.video_id}`);
+                }
+            } catch (fallbackError) {
+                console.error(`Fallback also failed for short ${videoId}:`, fallbackError);
+            }
             continue;
           }
 
@@ -656,19 +694,31 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 typeof currentBatch.getContinuation === 'function';
     }
 
-    res.json({
+    const response = {
       shorts,
       pagination: {
         has_more: hasMore,
         current_page: page,
         items_per_page: limit,
         total_items: shorts.length
+      },
+      debug_info: {
+        channel_id: channel.metadata?.external_id,
+        has_shorts_tab: channel.has_shorts,
+        raw_shorts_count: currentBatch?.videos?.length || 0,
+        valid_shorts_found: shorts.length
       }
-    });
+    };
+
+    console.log('Final response debug info:', JSON.stringify(response.debug_info, null, 2));
+    res.json(response);
 
   } catch (error) {
     console.error('Channel shorts error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
