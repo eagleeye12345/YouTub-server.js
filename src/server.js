@@ -575,6 +575,49 @@ app.get('/api/shorts/:videoId', async (req, res) => {
 // Get channel shorts endpoint with pagination
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
   try {
+    // Helper function to extract published date from shorts data
+    const extractPublishedDate = (short) => {
+        // Try to extract from accessibility text first (most reliable for shorts)
+        if (short.accessibility_text) {
+            // Look for date patterns in accessibility text
+            const dateMatch = short.accessibility_text.match(/(?:uploaded |posted |published )?(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
+            if (dateMatch) {
+                return parseYouTubeDate(dateMatch[1]);
+            }
+        }
+
+        // Try to get date from video metadata
+        if (short.metadata?.publishDate) {
+            return new Date(short.metadata.publishDate).toISOString();
+        }
+
+        // Try published text if available
+        if (short.published?.text) {
+            return parseYouTubeDate(short.published.text);
+        }
+
+        // Try to extract from basic info
+        if (short.basic_info?.publish_date) {
+            return new Date(short.basic_info.publish_date).toISOString();
+        }
+
+        // Try to extract from overlay metadata
+        if (short.overlay_metadata?.published_time?.text) {
+            return parseYouTubeDate(short.overlay_metadata.published_time.text);
+        }
+
+        // Try to extract from description
+        if (short.description_snippet?.text) {
+            const descMatch = short.description_snippet.text.match(/(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
+            if (descMatch) {
+                return parseYouTubeDate(descMatch[1]);
+            }
+        }
+
+        // Return null instead of current date if no date found
+        return null;
+    };
+
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 30;
     
