@@ -575,54 +575,23 @@ app.get('/api/shorts/:videoId', async (req, res) => {
 // Get channel shorts endpoint with pagination
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
   try {
-    // Helper function to extract published date from shorts data
-    const extractPublishedDate = (short) => {
-        // Try to extract from accessibility text first (most reliable for shorts)
-        if (short.accessibility_text) {
-            // Look for date patterns in accessibility text
-            const dateMatch = short.accessibility_text.match(/(?:uploaded |posted |published )?(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
-            if (dateMatch) {
-                return parseYouTubeDate(dateMatch[1]);
-            }
-        }
-
-        // Try to get date from video metadata
-        if (short.metadata?.publishDate) {
-            return new Date(short.metadata.publishDate).toISOString();
-        }
-
-        // Try published text if available
-        if (short.published?.text) {
-            return parseYouTubeDate(short.published.text);
-        }
-
-        // Try to extract from basic info
-        if (short.basic_info?.publish_date) {
-            return new Date(short.basic_info.publish_date).toISOString();
-        }
-
-        // Try to extract from overlay metadata
-        if (short.overlay_metadata?.published_time?.text) {
-            return parseYouTubeDate(short.overlay_metadata.published_time.text);
-        }
-
-        // Try to extract from description
-        if (short.description_snippet?.text) {
-            const descMatch = short.description_snippet.text.match(/(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
-            if (descMatch) {
-                return parseYouTubeDate(descMatch[1]);
-            }
-        }
-
-        // Return null instead of current date if no date found
-        return null;
-    };
-
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 30;
     
     console.log('Fetching channel shorts:', req.params.channelId, `(page ${page}, limit ${limit})`);
-    const channel = await yt.getChannel(req.params.channelId);
+    
+    // First verify the channel exists
+    let channel;
+    try {
+      channel = await yt.getChannel(req.params.channelId);
+      if (!channel) {
+        console.error('Channel not found:', req.params.channelId);
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+    } catch (error) {
+      console.error('Error fetching channel:', error);
+      return res.status(404).json({ error: 'Channel not found or not accessible' });
+    }
     
     // Log channel metadata
     console.log('Channel metadata:', JSON.stringify({
@@ -645,10 +614,22 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
       });
     }
     
-    // Get initial shorts tab
+    // Get initial shorts tab with error handling
     console.log('Attempting to get shorts tab...');
-    let shortsTab = await channel.getShorts();
-    console.log('Initial shorts tab loaded');
+    let shortsTab;
+    try {
+      shortsTab = await channel.getShorts();
+      if (!shortsTab) {
+        throw new Error('Failed to get shorts tab');
+      }
+      console.log('Initial shorts tab loaded');
+    } catch (error) {
+      console.error('Error getting shorts tab:', error);
+      return res.status(500).json({ 
+        error: 'Failed to fetch shorts tab',
+        details: error.message
+      });
+    }
     
     // Debug the shorts tab structure in detail
     console.log('Detailed shorts tab structure:', JSON.stringify({
@@ -657,117 +638,94 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         first_video: shortsTab?.videos?.[0],
         has_continuation: !!shortsTab?.has_continuation,
         content_type: shortsTab?.content_type,
-        page_type: shortsTab?.page_type,
-        raw_data: shortsTab?.videos?.slice(0, 1) // Log first video's raw data
+        page_type: shortsTab?.page_type
     }, null, 2));
 
-    // Skip to requested page if needed
-    let currentPage = 1;
-    let currentBatch = shortsTab;
+    if (!shortsTab?.videos?.length) {
+      console.log('No shorts found in tab');
+      return res.json({
+        shorts: [],
+        pagination: {
+          has_more: false,
+          current_page: page,
+          items_per_page: limit,
+          total_items: 0
+        }
+      });
+    }
+
+    // Process current page
+    const startIdx = 0;
+    const endIdx = Math.min(limit, shortsTab.videos.length);
     let shorts = [];
     let hasMore = false;
 
-    // Process current page
-    if (currentBatch?.videos) {
-      const startIdx = 0;
-      const endIdx = Math.min(limit, currentBatch.videos.length);
-      
-      // Log the raw videos array before filtering
-      console.log('Raw videos before filtering:', JSON.stringify({
-          total_videos: currentBatch.videos.length,
-          sample_videos: currentBatch.videos.slice(startIdx, Math.min(3, endIdx)) // Log first 3 videos for debugging
-      }, null, 2));
-      
-      // Filter out any shorts without valid IDs before processing
-      const validShorts = currentBatch.videos
-          .slice(startIdx, endIdx)
-          .filter(short => {
-              // Check all possible ID locations based on the ShortsLockupView structure
-              const hasId = short && (
-                  short.id || 
-                  short.videoId || 
-                  short.video_id || 
-                  (short.on_tap_endpoint?.payload?.videoId) ||
-                  (short.navigationEndpoint?.watchEndpoint?.videoId) ||
-                  (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
-                  (short.thumbnail?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
-                  (typeof short === 'object' && Object.values(short).find(val => 
-                      typeof val === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(val)
-                  ))
-              );
-              if (!hasId) {
-                  console.log('Invalid short object:', JSON.stringify(short, null, 2));
-              } else {
-                  console.log('Valid short found:', JSON.stringify({
-                      type: short.type,
-                      id: short.id,
-                      videoId: short.videoId,
-                      video_id: short.video_id,
-                      on_tap_videoId: short.on_tap_endpoint?.payload?.videoId,
-                      watchEndpoint: short.navigationEndpoint?.watchEndpoint?.videoId,
-                      thumbnail_url: short.thumbnail?.[0]?.url || short.thumbnails?.[0]?.url,
-                      title: short.overlay_metadata?.primary_text?.text || short.title?.text,
-                      views: short.overlay_metadata?.secondary_text?.text || short.view_count?.text,
-                      published: short.published?.text || short.accessibility_text
-                  }, null, 2));
-              }
-              return hasId;
-          })
-          .map(short => {
-              const videoId = short.id || 
-                  short.videoId || 
-                  short.video_id || 
-                  short.on_tap_endpoint?.payload?.videoId ||
-                  short.navigationEndpoint?.watchEndpoint?.videoId ||
-                  (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
-                  (short.thumbnail?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
-                  Object.values(short).find(val => 
-                      typeof val === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(val)
-                  );
+    try {
+      // Filter and process shorts
+      const validShorts = shortsTab.videos
+        .slice(startIdx, endIdx)
+        .filter(short => {
+          const hasId = short && (
+            short.id || 
+            short.videoId || 
+            short.video_id || 
+            (short.on_tap_endpoint?.payload?.videoId) ||
+            (short.navigationEndpoint?.watchEndpoint?.videoId) ||
+            (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
+            (short.thumbnail?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
+            (typeof short === 'object' && Object.values(short).find(val => 
+              typeof val === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(val)
+            ))
+          );
+          
+          if (!hasId) {
+            console.log('Invalid short object:', JSON.stringify(short, null, 2));
+          }
+          return hasId;
+        });
 
-              // Extract additional metadata from ShortsLockupView structure
-              const title = short.overlay_metadata?.primary_text?.text || 
-                           short.title?.text || 
-                           short.accessibility_text?.split(',')[0] || '';
-                           
-              const views = short.overlay_metadata?.secondary_text?.text || 
-                           short.view_count?.text || 
-                           (short.accessibility_text?.match(/(\d+[KMB]?\s+views)/) || [])[1] || '0';
-
-              // Extract published date from multiple possible locations
-              const publishedDate = extractPublishedDate(short);
-
-              return {
-                  ...short,
-                  id: videoId,
-                  title: title,
-                  views: views,
-                  thumbnail_url: short.thumbnail?.[0]?.url || short.thumbnails?.[0]?.url,
-                  published_at: publishedDate
-              };
-          });
-      
       console.log(`Found ${validShorts.length} valid shorts to process`);
-      
+
+      // Process each valid short
       for (const short of validShorts) {
         try {
-          const videoId = short.id;
+          const videoId = short.id || 
+            short.videoId || 
+            short.video_id || 
+            short.on_tap_endpoint?.payload?.videoId ||
+            short.navigationEndpoint?.watchEndpoint?.videoId ||
+            (short.thumbnails?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
+            (short.thumbnail?.[0]?.url?.match(/\/vi\/([^/]+)\//))?.[1] ||
+            Object.values(short).find(val => 
+              typeof val === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(val)
+            );
+
           if (!videoId) {
             console.warn('Skipping short with missing ID');
             continue;
           }
 
           console.log(`Processing short with ID: ${videoId}`);
-          const shortInfo = await yt.getShortsVideoInfo(videoId).catch(async (error) => {
-            console.warn(`Failed to get shorts info for ${videoId}, trying fallback: ${error.message}`);
-            return yt.getInfo(videoId);
-          });
           
-          if (!shortInfo || !shortInfo.basic_info) {
+          // Try to get short info with fallback
+          let shortInfo;
+          try {
+            shortInfo = await yt.getShortsVideoInfo(videoId);
+          } catch (error) {
+            console.warn(`Failed to get shorts info for ${videoId}, trying fallback:`, error.message);
+            try {
+              shortInfo = await yt.getInfo(videoId);
+            } catch (fallbackError) {
+              console.error(`Both shorts and regular info failed for ${videoId}:`, fallbackError.message);
+              continue;
+            }
+          }
+
+          if (!shortInfo?.basic_info) {
             console.warn(`No info found for short ${videoId}, skipping`);
             continue;
           }
-          
+
           const shortData = {
             video_id: videoId,
             title: shortInfo.basic_info.title || short.title || '',
@@ -779,7 +737,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                          `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
             published_at: shortInfo.basic_info.publish_date || 
                          extractPublishedDate(short) ||
-                         null, // Don't use current date as fallback
+                         null,
             views: shortInfo.basic_info.view_count?.toString() || 
                    short.views?.replace(/[^0-9]/g, '') || '0',
             channel_id: channel.metadata?.external_id || '',
@@ -789,39 +747,37 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             playability_status: shortInfo.playability_status,
             accessibility_text: short.accessibility_text || ''
           };
-          
+
           shorts.push(shortData);
           console.log(`Successfully processed short: ${shortData.video_id}`);
         } catch (error) {
-          console.error(`Error processing short ${short?.id}:`, error);
+          console.error(`Error processing short:`, error);
           continue;
         }
       }
 
       // Check if more shorts available
-      hasMore = currentBatch.has_continuation && 
-                typeof currentBatch.getContinuation === 'function';
+      hasMore = shortsTab.has_continuation && 
+                typeof shortsTab.getContinuation === 'function';
+
+      const response = {
+        shorts,
+        pagination: {
+          has_more: hasMore,
+          current_page: page,
+          items_per_page: limit,
+          total_items: shorts.length
+        }
+      };
+
+      res.json(response);
+    } catch (error) {
+      console.error('Error processing shorts:', error);
+      res.status(500).json({ 
+        error: 'Error processing shorts',
+        details: error.message
+      });
     }
-
-    const response = {
-      shorts,
-      pagination: {
-        has_more: hasMore,
-        current_page: page,
-        items_per_page: limit,
-        total_items: shorts.length
-      },
-      debug_info: {
-        channel_id: channel.metadata?.external_id,
-        has_shorts_tab: channel.has_shorts,
-        raw_shorts_count: currentBatch?.videos?.length || 0,
-        valid_shorts_found: shorts.length
-      }
-    };
-
-    console.log('Final response debug info:', JSON.stringify(response.debug_info, null, 2));
-    res.json(response);
-
   } catch (error) {
     console.error('Channel shorts error:', error);
     res.status(500).json({ 
