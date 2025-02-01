@@ -865,6 +865,65 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
     }
 });
 
+// Add a new debug endpoint for shorts
+app.get('/api/debug/shorts/:videoId', async (req, res) => {
+    try {
+        const results = {
+            shortsInfo: null,
+            regularInfo: null,
+            error: null
+        };
+
+        // Try getting shorts-specific info
+        try {
+            const shortsInfo = await yt.getShortsVideoInfo(req.params.videoId);
+            results.shortsInfo = {
+                basic_info: shortsInfo.basic_info,
+                primary_info: shortsInfo.primary_info,
+                secondary_info: shortsInfo.secondary_info,
+                microformat: shortsInfo.microformat,
+                video_details: shortsInfo.video_details,
+                overlay_metadata: shortsInfo.overlay_metadata,
+                published: shortsInfo.published,
+                publishedTimeText: shortsInfo.publishedTimeText,
+                dateText: shortsInfo.dateText,
+                // Include raw data for inspection
+                raw: shortsInfo
+            };
+        } catch (error) {
+            results.error = `Shorts info error: ${error.message}`;
+        }
+
+        // Also try getting regular video info as fallback
+        try {
+            const videoInfo = await yt.getInfo(req.params.videoId);
+            results.regularInfo = {
+                basic_info: videoInfo.basic_info,
+                primary_info: videoInfo.primary_info,
+                secondary_info: videoInfo.secondary_info,
+                microformat: videoInfo.microformat,
+                video_details: videoInfo.video_details,
+                // Include raw data for inspection
+                raw: videoInfo
+            };
+        } catch (error) {
+            if (!results.error) {
+                results.error = `Regular info error: ${error.message}`;
+            }
+        }
+
+        // Send the full response
+        res.header('Content-Type', 'application/json');
+        res.send(JSON.stringify(results, null, 2));
+
+    } catch (error) {
+        res.status(500).json({
+            error: error.message,
+            stack: error.stack
+        });
+    }
+});
+
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
     app.listen(port, () => {
