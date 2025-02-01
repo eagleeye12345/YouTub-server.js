@@ -166,10 +166,30 @@ function debugLogObject(prefix, obj) {
 // Update the extractPublishedDate function with more paths and debugging
 function extractPublishedDate(short) {
     try {
-        // Check the most reliable path first (where we found the date)
+        // Check regularInfo path first
+        if (short.regularInfo?.primary_info?.published?.text) {
+            const dateStr = short.regularInfo.primary_info.published.text;
+            console.log('Found date in regularInfo:', dateStr);
+            const parsedDate = new Date(dateStr);
+            if (!isNaN(parsedDate.getTime())) {
+                return parsedDate.toISOString();
+            }
+        }
+
+        // Check primary_info path
         if (short.primary_info?.published?.text) {
             const dateStr = short.primary_info.published.text;
-            console.log('Found date in primary_info.published:', dateStr);
+            console.log('Found date in primary_info:', dateStr);
+            const parsedDate = new Date(dateStr);
+            if (!isNaN(parsedDate.getTime())) {
+                return parsedDate.toISOString();
+            }
+        }
+
+        // Check raw data path
+        if (short.raw?.primary_info?.published?.text) {
+            const dateStr = short.raw.primary_info.published.text;
+            console.log('Found date in raw data:', dateStr);
             const parsedDate = new Date(dateStr);
             if (!isNaN(parsedDate.getTime())) {
                 return parsedDate.toISOString();
@@ -195,6 +215,7 @@ function extractPublishedDate(short) {
 
         for (const dateStr of possibleDates) {
             if (!dateStr) continue;
+            console.log('Checking fallback date:', dateStr);
 
             // If it's already an ISO date string, return it
             if (dateStr.includes('T') && dateStr.includes('Z')) {
@@ -621,32 +642,46 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
 app.get('/api/shorts/:videoId', async (req, res) => {
     try {
         let shortInfo;
+        let regularInfo;
+        
         try {
             shortInfo = await yt.getShortsVideoInfo(req.params.videoId);
         } catch (error) {
             console.warn('Failed to get shorts info, trying fallback to regular video info');
-            shortInfo = await yt.getInfo(req.params.videoId);
         }
 
-        if (!shortInfo || !shortInfo.basic_info) {
+        try {
+            regularInfo = await yt.getInfo(req.params.videoId);
+        } catch (error) {
+            console.warn('Failed to get regular info:', error);
+        }
+
+        if (!shortInfo && !regularInfo) {
             return res.status(404).json({ error: 'Short not found or not available' });
         }
 
+        // Combine the info objects
+        const combinedInfo = {
+            ...shortInfo,
+            regularInfo: regularInfo,
+            raw: shortInfo || regularInfo
+        };
+
         const simplifiedInfo = {
-            video_id: shortInfo.basic_info.id,
-            title: shortInfo.primary_info?.title?.text || shortInfo.basic_info.title || '',
-            description: shortInfo.basic_info.description || '',
-            thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url ||
+            video_id: combinedInfo.basic_info?.id || req.params.videoId,
+            title: combinedInfo.primary_info?.title?.text || 
+                   combinedInfo.basic_info?.title || '',
+            description: combinedInfo.basic_info?.description || '',
+            thumbnail_url: combinedInfo.basic_info?.thumbnail?.[0]?.url ||
                          `https://i.ytimg.com/vi/${req.params.videoId}/hqdefault.jpg`,
-            views: extractViews(shortInfo) || '0',
-            // Pass the entire shortInfo object to extractPublishedDate
-            published_at: extractPublishedDate(shortInfo),
-            channel_id: shortInfo.basic_info.channel?.id,
-            channel_title: shortInfo.basic_info.channel?.name,
-            channel_thumbnail: shortInfo.basic_info.channel?.thumbnails?.[0]?.url,
-            duration: shortInfo.basic_info.duration?.text || '',
+            views: extractViews(combinedInfo) || '0',
+            published_at: extractPublishedDate(combinedInfo),
+            channel_id: combinedInfo.basic_info?.channel?.id,
+            channel_title: combinedInfo.basic_info?.channel?.name,
+            channel_thumbnail: combinedInfo.basic_info?.channel?.thumbnails?.[0]?.url,
+            duration: combinedInfo.basic_info?.duration?.text || '',
             is_short: true,
-            playability_status: shortInfo.playability_status
+            playability_status: combinedInfo.playability_status
         };
 
         res.json(simplifiedInfo);
