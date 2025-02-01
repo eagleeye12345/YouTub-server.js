@@ -722,45 +722,31 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         const processedShorts = [];
         for (const short of shortsForCurrentPage) {
             try {
-                // Get video ID from various possible locations
-                const videoId = short.id?.videoId || // Try new format first
-                              short.id || // Then try old format
-                              short.video_id ||
-                              (typeof short === 'string' ? short : null);
-
+                // Get video ID from on_tap_endpoint
+                const videoId = short.on_tap_endpoint?.payload?.videoId;
                 if (!videoId) {
-                    console.warn('Could not extract video ID from short:', short);
+                    console.warn('Could not extract video ID from short');
                     continue;
                 }
 
                 console.log('Processing short:', videoId);
 
-                // Get video info
-                const videoInfo = await yt.getInfo(videoId);
-                
-                // Extract views from accessibility text
-                const viewsMatch = short.accessibility?.accessibilityData?.label?.match(/(\d+[KMB]?)\s+views/i) ||
-                                 short.accessibility_text?.match(/(\d+[KMB]?)\s+views/i);
-                
+                // Extract data directly from the short object
                 const shortData = {
                     video_id: videoId,
-                    title: videoInfo.basic_info?.title || 
-                           short.title?.text || 
-                           short.title || 
-                           '',
-                    description: videoInfo.basic_info?.description || 
-                                short.description?.text || 
-                                '',
-                    thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
-                                 short.thumbnail?.[0]?.url ||
+                    title: short.overlay_metadata?.primary_text?.text || 
+                           short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
+                    description: '',  // Shorts typically don't have descriptions
+                    thumbnail_url: short.thumbnail?.[0]?.url || 
                                  `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                    published_at: videoInfo.basic_info?.publish_date || null,
-                    views: viewsMatch?.[1] || 
-                           videoInfo.basic_info?.view_count?.toString() || 
+                    published_at: null,  // We'll need to fetch this separately if needed
+                    views: (short.overlay_metadata?.secondary_text?.text || '')
+                           .replace(/[^0-9.KMB]/gi, '') || 
+                           short.accessibility_text?.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i)?.[1] || 
                            '0',
                     channel_id: channel.metadata?.external_id || '',
                     channel_title: channel.metadata?.title || '',
-                    duration: videoInfo.basic_info?.duration?.text || '',
+                    duration: '',  // Shorts are typically < 60 seconds
                     is_short: true
                 };
 
