@@ -163,9 +163,22 @@ function debugLogObject(prefix, obj) {
     console.log(`${prefix}:`, JSON.stringify(obj, null, 2));
 }
 
-// First, update the extractPublishedDate function to handle more cases
+// Update the extractPublishedDate function with more paths and debugging
 function extractPublishedDate(short) {
     try {
+        // Debug the input object
+        console.log('Attempting to extract date from:', JSON.stringify({
+            microformat: short.microformat,
+            basic_info: short.basic_info,
+            primary_info: short.primary_info,
+            video_details: short.video_details,
+            overlay_metadata: short.overlay_metadata,
+            accessibility_text: short.accessibility_text,
+            published: short.published,
+            publishedTimeText: short.publishedTimeText,
+            dateText: short.dateText
+        }, null, 2));
+
         // Try all possible paths for publish date
         const possibleDates = [
             // Try microformat (most reliable)
@@ -176,43 +189,75 @@ function extractPublishedDate(short) {
             // Try basic info
             short.basic_info?.publish_date,
             short.basic_info?.uploadDate,
+            short.basic_info?.publishedTimeText?.simpleText,
             
             // Try primary info
             short.primary_info?.dateText?.simpleText,
             short.primary_info?.uploadDate,
+            short.primary_info?.publishedTimeText?.simpleText,
             
             // Try video details
             short.video_details?.publishDate,
             short.video_details?.uploadDate,
+            short.video_details?.publishedTimeText?.simpleText,
             
             // Try overlay metadata
             short.overlay_metadata?.published_time?.text,
             
-            // Try accessibility data
-            short.accessibility_text
+            // Try direct properties
+            short.published?.text,
+            short.publishedTimeText?.simpleText,
+            short.dateText?.simpleText,
+            
+            // Try accessibility data (often contains relative time)
+            short.accessibility_text,
+            
+            // Try published text directly
+            typeof short.published === 'string' ? short.published : null,
+            
+            // Try raw text fields
+            short.publishedTimeText,
+            short.dateText
         ];
+
+        console.log('Checking possible date paths:', possibleDates);
 
         for (const dateStr of possibleDates) {
             if (!dateStr) continue;
 
+            console.log('Checking date string:', dateStr);
+
             // If it's already an ISO date string, return it
             if (dateStr.includes('T') && dateStr.includes('Z')) {
+                console.log('Found ISO date:', dateStr);
                 return dateStr;
             }
 
             // Try parsing relative time from accessibility text
             const relativeMatch = dateStr.match(/(?:uploaded|posted|published|premiered|streamed)\s+(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
             if (relativeMatch) {
-                return parseYouTubeDate(relativeMatch[1]);
+                const parsedDate = parseYouTubeDate(relativeMatch[1]);
+                console.log('Parsed relative date:', parsedDate);
+                return parsedDate;
             }
 
             // Try parsing as a regular date
             const parsedDate = new Date(dateStr);
             if (!isNaN(parsedDate.getTime())) {
+                console.log('Parsed regular date:', parsedDate.toISOString());
                 return parsedDate.toISOString();
+            }
+
+            // Try parsing just the relative time part
+            const timeMatch = dateStr.match(/(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
+            if (timeMatch) {
+                const parsedDate = parseYouTubeDate(timeMatch[1]);
+                console.log('Parsed time-only date:', parsedDate);
+                return parsedDate;
             }
         }
 
+        console.log('Failed to extract date from any source');
         return null;
     } catch (error) {
         console.error('Error extracting published date:', error);
@@ -628,6 +673,12 @@ app.get('/api/shorts/:videoId', async (req, res) => {
         let shortInfo;
         try {
             shortInfo = await yt.getShortsVideoInfo(req.params.videoId);
+            console.log('Short info structure:', JSON.stringify({
+                basic_info: shortInfo.basic_info,
+                primary_info: shortInfo.primary_info,
+                microformat: shortInfo.microformat,
+                video_details: shortInfo.video_details
+            }, null, 2));
         } catch (error) {
             console.warn('Failed to get shorts info, trying fallback to regular video info');
             shortInfo = await yt.getInfo(req.params.videoId);
@@ -659,8 +710,9 @@ app.get('/api/shorts/:videoId', async (req, res) => {
                   extractViews(shortInfo) || 
                   '0',
             published_at: extractPublishedDate(shortInfo) || 
-                         extractPublishedDate(short) ||
-                         null, // Don't fallback to current date
+                         extractPublishedDate(shortInfo?.basic_info) || 
+                         extractPublishedDate(shortInfo?.primary_info) ||
+                         null,
             channel_id: shortInfo.basic_info.channel?.id,
             channel_title: shortInfo.basic_info.channel?.name,
             channel_thumbnail: shortInfo.basic_info.channel?.thumbnails?.[0]?.url,
@@ -668,6 +720,9 @@ app.get('/api/shorts/:videoId', async (req, res) => {
             is_short: true,
             playability_status: shortInfo.playability_status
         };
+
+        // Log the final result
+        console.log('Final processed short:', JSON.stringify(simplifiedInfo, null, 2));
         res.json(simplifiedInfo);
     } catch (error) {
         console.error('Shorts error:', error);
