@@ -155,19 +155,37 @@ function parseYouTubeDate(dateStr) {
     }
 }
 
-// First, let's improve the extractPublishedDate helper function
+// Update the extractPublishedDate helper function to handle more cases
 function extractPublishedDate(short) {
     try {
-        // Check all possible date locations in order of reliability
+        // Check for microformat data first (most reliable)
+        if (short.microformat?.publishDate) {
+            return new Date(short.microformat.publishDate).toISOString();
+        }
+
+        // Check player microformat
+        if (short.player_microformat?.publish_date) {
+            return new Date(short.player_microformat.publish_date).toISOString();
+        }
+
+        // Check basic info
         if (short.basic_info?.publish_date) {
             return new Date(short.basic_info.publish_date).toISOString();
         }
-        
-        if (short.publishedTimeText?.text || short.publishedTimeText) {
-            const dateText = typeof short.publishedTimeText === 'string' 
-                ? short.publishedTimeText 
-                : short.publishedTimeText.text;
-            return parseYouTubeDate(dateText);
+
+        // Check primary info
+        if (short.primary_info?.published?.simpleText) {
+            return parseYouTubeDate(short.primary_info.published.simpleText);
+        }
+
+        // Check video primary info
+        if (short.videoPrimaryInfo?.dateText?.simpleText) {
+            return parseYouTubeDate(short.videoPrimaryInfo.dateText.simpleText);
+        }
+
+        // Try published text directly
+        if (short.publishedTimeText?.simpleText) {
+            return parseYouTubeDate(short.publishedTimeText.simpleText);
         }
 
         // Try published property
@@ -175,7 +193,7 @@ function extractPublishedDate(short) {
             return parseYouTubeDate(short.published.text);
         }
 
-        // Try accessibility text for date
+        // Try accessibility text
         if (short.accessibility_text) {
             const dateMatch = short.accessibility_text.match(
                 /(?:uploaded|posted|published|streamed)\s+(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i
@@ -185,15 +203,55 @@ function extractPublishedDate(short) {
             }
         }
 
-        // Try overlay metadata
-        if (short.overlay_metadata?.published_time?.text) {
-            return parseYouTubeDate(short.overlay_metadata.published_time.text);
-        }
-
         return null;
     } catch (error) {
         console.error('Error extracting published date:', error);
         return null;
+    }
+}
+
+// Add helper function to extract views
+function extractViews(short) {
+    try {
+        // Try basic info first
+        if (short.basic_info?.view_count) {
+            return short.basic_info.view_count.toString();
+        }
+
+        // Try video primary info
+        if (short.videoPrimaryInfo?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
+            return short.videoPrimaryInfo.viewCount.videoViewCountRenderer.viewCount.simpleText;
+        }
+
+        // Try view count text
+        if (short.view_count?.text) {
+            const viewText = short.view_count.text;
+            // Convert view text to number (e.g., "1.5M views" -> "1500000")
+            return viewText.replace(/[^0-9.KMB]/gi, '');
+        }
+
+        // Try short view count
+        if (short.short_view_count?.text) {
+            return short.short_view_count.text.replace(/[^0-9.KMB]/gi, '');
+        }
+
+        // Try overlay stats
+        if (short.overlay_stats?.[0]?.text) {
+            return short.overlay_stats[0].text.replace(/[^0-9.KMB]/gi, '');
+        }
+
+        // Try accessibility text for view count
+        if (short.accessibility_text) {
+            const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?) views/i);
+            if (viewMatch) {
+                return viewMatch[1];
+            }
+        }
+
+        return '0';
+    } catch (error) {
+        console.error('Error extracting views:', error);
+        return '0';
     }
 }
 
@@ -392,11 +450,12 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                                 thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url || 
                                              short.thumbnail_url ||
                                              `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                                published_at: shortInfo.basic_info.publish_date || 
+                                published_at: extractPublishedDate(shortInfo) || 
                                              extractPublishedDate(short) ||
-                                             new Date().toISOString(), // fallback to current date only if no other date found
-                                views: shortInfo.basic_info.view_count?.toString() || 
-                                       short.views?.replace(/[^0-9]/g, '') || '0',
+                                             null, // Don't fallback to current date
+                                views: extractViews(shortInfo) || 
+                                       extractViews(short) || 
+                                       '0',
                                 channel_id: channel.metadata?.external_id || '',
                                 channel_title: channel.metadata?.title || '',
                                 duration: shortInfo.basic_info.duration?.text || short.duration?.text || '',
@@ -618,11 +677,12 @@ app.get('/api/shorts/:videoId', async (req, res) => {
             description: description,
             thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url ||
                          `https://i.ytimg.com/vi/${req.params.videoId}/hqdefault.jpg`,
-            views: shortInfo.basic_info.view_count || 
-                  shortInfo.view_count?.text?.replace(/[^0-9]/g, '') || '0',
-            published_at: shortInfo.basic_info.publish_date || 
-                         extractPublishedDate(shortInfo) ||
-                         new Date().toISOString(), // Fallback to current date if nothing else works
+            views: extractViews(shortInfo) || 
+                  extractViews(shortInfo) || 
+                  '0',
+            published_at: extractPublishedDate(shortInfo) || 
+                         extractPublishedDate(short) ||
+                         null, // Don't fallback to current date
             channel_id: shortInfo.basic_info.channel?.id,
             channel_title: shortInfo.basic_info.channel?.name,
             channel_thumbnail: shortInfo.basic_info.channel?.thumbnails?.[0]?.url,
@@ -767,13 +827,12 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
                           short.thumbnail_url ||
                           `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-            published_at: shortInfo.basic_info?.publish_date || 
+            published_at: extractPublishedDate(shortInfo) || 
                          extractPublishedDate(short) ||
-                         extractPublishedDate(shortInfo) ||
-                         new Date().toISOString(), // Fallback to current date if nothing else works
-            views: shortInfo.basic_info?.view_count?.toString() || 
-                   short.view_count?.text?.replace(/[^0-9]/g, '') ||
-                   short.views?.replace(/[^0-9]/g, '') || '0',
+                         null, // Don't fallback to current date
+            views: extractViews(shortInfo) || 
+                   extractViews(short) || 
+                   '0',
             channel_id: channel.metadata?.external_id || '',
             channel_title: channel.metadata?.title || '',
             duration: shortInfo.basic_info?.duration?.text || 
@@ -852,13 +911,12 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                   thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
                                 short.thumbnail_url ||
                                 `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                  published_at: shortInfo.basic_info?.publish_date || 
+                  published_at: extractPublishedDate(shortInfo) || 
                                extractPublishedDate(short) ||
-                               extractPublishedDate(shortInfo) ||
-                               new Date().toISOString(), // Fallback to current date if nothing else works
-                  views: shortInfo.basic_info?.view_count?.toString() || 
-                         short.view_count?.text?.replace(/[^0-9]/g, '') ||
-                         short.views?.replace(/[^0-9]/g, '') || '0',
+                               null, // Don't fallback to current date
+                  views: extractViews(shortInfo) || 
+                         extractViews(short) || 
+                         '0',
                   channel_id: channel.metadata?.external_id || '',
                   channel_title: channel.metadata?.title || '',
                   duration: shortInfo.basic_info?.duration?.text || 
