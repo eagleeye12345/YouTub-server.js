@@ -15,7 +15,11 @@ let ytInitialized = false;
 
 async function initializeYouTube() {
     try {
-        yt = await Innertube.create();
+        yt = await Innertube.create({
+            cookie: process.env.YOUTUBE_COOKIE,
+            cache: false,
+            generate_session_locally: true
+        });
         ytInitialized = true;
         console.log('YouTube client initialized successfully');
     } catch (error) {
@@ -163,65 +167,36 @@ function debugLogObject(prefix, obj) {
 // Update extractPublishedDate function
 function extractPublishedDate(short) {
     try {
-        debugLogObject('Extracting date from object', {
-            microformat: short.microformat,
-            player_microformat: short.player_microformat,
-            basic_info: short.basic_info,
-            primary_info: short.primary_info,
-            videoPrimaryInfo: short.videoPrimaryInfo,
-            publishedTimeText: short.publishedTimeText,
-            published: short.published,
-            accessibility_text: short.accessibility_text
-        });
-
-        // Try primary info first (most reliable for shorts)
-        if (short.primary_info?.published) {
-            const publishedText = short.primary_info.published.text || 
-                                short.primary_info.published.simpleText;
-            if (publishedText) {
-                console.log('Found date in primary_info:', publishedText);
-                return parseYouTubeDate(publishedText);
+        // Try to extract from accessibility text first
+        if (short.accessibility_text) {
+            const uploadMatch = short.accessibility_text.match(/(?:uploaded|posted|published|premiered)\s+(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
+            if (uploadMatch) {
+                console.log('Found date in accessibility text:', uploadMatch[1]);
+                return parseYouTubeDate(uploadMatch[1]);
             }
+        }
+
+        // Try microformat (most reliable when available)
+        if (short.microformat?.playerMicroformatRenderer?.publishDate) {
+            return new Date(short.microformat.playerMicroformatRenderer.publishDate).toISOString();
         }
 
         // Try video details
         if (short.video_details?.publishDate) {
-            console.log('Found date in video_details:', short.video_details.publishDate);
             return new Date(short.video_details.publishDate).toISOString();
-        }
-
-        // Try microformat
-        if (short.microformat?.playerMicroformatRenderer?.publishDate) {
-            console.log('Found date in microformat:', short.microformat.playerMicroformatRenderer.publishDate);
-            return new Date(short.microformat.playerMicroformatRenderer.publishDate).toISOString();
         }
 
         // Try basic info
         if (short.basic_info?.publishDate || short.basic_info?.publish_date) {
             const date = short.basic_info.publishDate || short.basic_info.publish_date;
-            console.log('Found date in basic_info:', date);
             return new Date(date).toISOString();
         }
 
-        // Try accessibility label
-        if (short.accessibility?.accessibilityData?.label) {
-            const match = short.accessibility.accessibilityData.label.match(
-                /(?:uploaded|posted|published|streamed)\s+(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i
-            );
-            if (match) {
-                console.log('Found date in accessibility label:', match[1]);
-                return parseYouTubeDate(match[1]);
-            }
+        // Try primary info
+        if (short.primary_info?.dateText?.simpleText) {
+            return parseYouTubeDate(short.primary_info.dateText.simpleText);
         }
 
-        // Try published text
-        if (short.publishedTimeText?.simpleText || short.publishedTimeText?.text) {
-            const text = short.publishedTimeText.simpleText || short.publishedTimeText.text;
-            console.log('Found date in publishedTimeText:', text);
-            return parseYouTubeDate(text);
-        }
-
-        console.log('No valid date found in object');
         return null;
     } catch (error) {
         console.error('Error extracting published date:', error);
@@ -232,51 +207,35 @@ function extractPublishedDate(short) {
 // Update extractViews function
 function extractViews(short) {
     try {
-        debugLogObject('Extracting views from object', {
-            basic_info: short.basic_info,
-            videoPrimaryInfo: short.videoPrimaryInfo,
-            view_count: short.view_count,
-            short_view_count: short.short_view_count,
-            overlay_stats: short.overlay_stats,
-            accessibility_text: short.accessibility_text
-        });
-
-        // Try engagement panel first
-        if (short.engagementPanel?.engagementPanelSectionListRenderer?.content?.viewCount) {
-            const viewText = short.engagementPanel.engagementPanelSectionListRenderer.content.viewCount.videoViewCountRenderer.viewCount.simpleText;
-            console.log('Found views in engagement panel:', viewText);
-            return viewText.replace(/[^0-9.KMB]/gi, '');
-        }
-
-        // Try video primary info
-        if (short.primary_info?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
-            const viewText = short.primary_info.viewCount.videoViewCountRenderer.viewCount.simpleText;
-            console.log('Found views in primary info:', viewText);
-            return viewText.replace(/[^0-9.KMB]/gi, '');
-        }
-
-        // Try basic info
-        if (short.basic_info?.view_count) {
-            console.log('Found views in basic info:', short.basic_info.view_count);
-            return short.basic_info.view_count.toString();
-        }
-
-        // Try accessibility text
+        // First check accessibility_text as it often contains the most reliable view count
         if (short.accessibility_text) {
-            const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s+views?/i);
+            const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s*views?/i);
             if (viewMatch) {
                 console.log('Found views in accessibility text:', viewMatch[1]);
                 return viewMatch[1];
             }
         }
 
+        // Try engagement panel
+        if (short.engagementPanel?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
+            return short.engagementPanel.engagementPanelSectionListRenderer.content.viewCount.videoViewCountRenderer.viewCount.simpleText;
+        }
+
+        // Try video primary info
+        if (short.videoPrimaryInfo?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
+            return short.videoPrimaryInfo.viewCount.videoViewCountRenderer.viewCount.simpleText;
+        }
+
+        // Try basic info
+        if (short.basic_info?.view_count) {
+            return short.basic_info.view_count.toString();
+        }
+
         // Try overlay stats
         if (short.overlay_stats?.[0]?.text?.simpleText) {
-            console.log('Found views in overlay stats:', short.overlay_stats[0].text.simpleText);
             return short.overlay_stats[0].text.simpleText.replace(/[^0-9.KMB]/gi, '');
         }
 
-        console.log('No valid view count found in object');
         return '0';
     } catch (error) {
         console.error('Error extracting views:', error);
@@ -484,7 +443,8 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                                 title: shortInfo.basic_info?.title || 
                                        shortInfo.primary_info?.title?.text ||
                                        short.title?.text ||
-                                       short.overlay_metadata?.primary_text?.text || '',
+                                       short.overlay_metadata?.primary_text?.text || 
+                                       (short.accessibility_text?.split(',')[0] || '').replace(/ - play Short$/, ''),
                                 description: shortInfo.basic_info?.description || 
                                              shortInfo.primary_info?.description?.text ||
                                              short.description_snippet?.text || 
@@ -492,18 +452,12 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                                 thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
                                               short.thumbnail_url ||
                                               `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                                published_at: shortInfo.microformat?.playerMicroformatRenderer?.publishDate || // Try this first
-                                             shortInfo.video_details?.publishDate ||
-                                             shortInfo.basic_info?.publishDate ||
-                                             extractPublishedDate(shortInfo) || 
+                                published_at: extractPublishedDate(shortInfo) || 
                                              extractPublishedDate(short) ||
                                              null,
-                                views: shortInfo.videoPrimaryInfo?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
-                                       shortInfo.basic_info?.view_count?.toString() ||
-                                       shortInfo.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
-                                       extractViews(shortInfo) || 
+                                views: extractViews(shortInfo) || 
                                        extractViews(short) || 
-                                       '0',
+                                       (short.accessibility_text?.match(/(\d+(?:\.\d+)?[KMB]?)\s*views/i)?.[1] || '0'),
                                 channel_id: channel.metadata?.external_id || '',
                                 channel_title: channel.metadata?.title || '',
                                 duration: shortInfo.basic_info?.duration?.text || 
@@ -878,7 +832,8 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             title: shortInfo.basic_info?.title || 
                    shortInfo.primary_info?.title?.text ||
                    short.title?.text ||
-                   short.overlay_metadata?.primary_text?.text || '',
+                   short.overlay_metadata?.primary_text?.text || 
+                   (short.accessibility_text?.split(',')[0] || '').replace(/ - play Short$/, ''),
             description: shortInfo.basic_info?.description || 
                         shortInfo.primary_info?.description?.text ||
                         short.description_snippet?.text || 
@@ -886,18 +841,12 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
                           short.thumbnail_url ||
                           `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-            published_at: shortInfo.microformat?.playerMicroformatRenderer?.publishDate || // Try this first
-                         shortInfo.video_details?.publishDate ||
-                         shortInfo.basic_info?.publishDate ||
-                         extractPublishedDate(shortInfo) || 
+            published_at: extractPublishedDate(shortInfo) || 
                          extractPublishedDate(short) ||
                          null,
-            views: shortInfo.videoPrimaryInfo?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
-                   shortInfo.basic_info?.view_count?.toString() ||
-                   shortInfo.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
-                   extractViews(shortInfo) || 
+            views: extractViews(shortInfo) || 
                    extractViews(short) || 
-                   '0',
+                   (short.accessibility_text?.match(/(\d+(?:\.\d+)?[KMB]?)\s*views/i)?.[1] || '0'),
             channel_id: channel.metadata?.external_id || '',
             channel_title: channel.metadata?.title || '',
             duration: shortInfo.basic_info?.duration?.text || 
@@ -907,7 +856,9 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             accessibility_text: short.accessibility_text || ''
           };
 
-          console.log('Processed short data:', JSON.stringify(shortData, null, 2));
+          console.log('Processing short with accessibility text:', short.accessibility_text);
+          console.log('Extracted views:', shortData.views);
+          console.log('Extracted publish date:', shortData.published_at);
           shorts.push(shortData);
           console.log(`Successfully processed short: ${shortData.video_id}`);
         } catch (error) {
@@ -978,7 +929,8 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                   title: shortInfo.basic_info?.title || 
                          shortInfo.primary_info?.title?.text ||
                          short.title?.text ||
-                         short.overlay_metadata?.primary_text?.text || '',
+                         short.overlay_metadata?.primary_text?.text || 
+                         (short.accessibility_text?.split(',')[0] || '').replace(/ - play Short$/, ''),
                   description: shortInfo.basic_info?.description || 
                               shortInfo.primary_info?.description?.text ||
                               short.description_snippet?.text || 
@@ -986,18 +938,12 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                   thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
                                 short.thumbnail_url ||
                                 `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                  published_at: shortInfo.microformat?.playerMicroformatRenderer?.publishDate || // Try this first
-                               shortInfo.video_details?.publishDate ||
-                               shortInfo.basic_info?.publishDate ||
-                               extractPublishedDate(shortInfo) || 
+                  published_at: extractPublishedDate(shortInfo) || 
                                extractPublishedDate(short) ||
                                null,
-                  views: shortInfo.videoPrimaryInfo?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
-                         shortInfo.basic_info?.view_count?.toString() ||
-                         shortInfo.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
-                         extractViews(shortInfo) || 
+                  views: extractViews(shortInfo) || 
                          extractViews(short) || 
-                         '0',
+                         (short.accessibility_text?.match(/(\d+(?:\.\d+)?[KMB]?)\s*views/i)?.[1] || '0'),
                   channel_id: channel.metadata?.external_id || '',
                   channel_title: channel.metadata?.title || '',
                   duration: shortInfo.basic_info?.duration?.text || 
