@@ -470,29 +470,50 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                                 continue;
                             }
 
+                            console.log('Raw short info:', JSON.stringify({
+                                basic_info: shortInfo.basic_info,
+                                primary_info: shortInfo.primary_info,
+                                engagement_panels: shortInfo.engagement_panels,
+                                microformat: shortInfo.microformat,
+                                player_microformat: shortInfo.player_microformat,
+                                video_details: shortInfo.video_details
+                            }, null, 2));
+
                             const shortData = {
                                 video_id: videoId,
-                                title: shortInfo.basic_info.title || short.title || '',
-                                description: shortInfo.basic_info.description || 
-                                            short.description_snippet?.text || 
-                                            short.description?.text || '',
-                                thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url || 
-                                             short.thumbnail_url ||
-                                             `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                                published_at: extractPublishedDate(shortInfo) || 
+                                title: shortInfo.basic_info?.title || 
+                                       shortInfo.primary_info?.title?.text ||
+                                       short.title?.text ||
+                                       short.overlay_metadata?.primary_text?.text || '',
+                                description: shortInfo.basic_info?.description || 
+                                             shortInfo.primary_info?.description?.text ||
+                                             short.description_snippet?.text || 
+                                             short.description?.text || '',
+                                thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
+                                              short.thumbnail_url ||
+                                              `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                                published_at: shortInfo.microformat?.playerMicroformatRenderer?.publishDate || // Try this first
+                                             shortInfo.video_details?.publishDate ||
+                                             shortInfo.basic_info?.publishDate ||
+                                             extractPublishedDate(shortInfo) || 
                                              extractPublishedDate(short) ||
-                                             null, // Don't fallback to current date
-                                views: extractViews(shortInfo) || 
+                                             null,
+                                views: shortInfo.videoPrimaryInfo?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
+                                       shortInfo.basic_info?.view_count?.toString() ||
+                                       shortInfo.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
+                                       extractViews(shortInfo) || 
                                        extractViews(short) || 
                                        '0',
                                 channel_id: channel.metadata?.external_id || '',
                                 channel_title: channel.metadata?.title || '',
-                                duration: shortInfo.basic_info.duration?.text || short.duration?.text || '',
+                                duration: shortInfo.basic_info?.duration?.text || 
+                                          short.duration?.text || '',
                                 is_short: true,
                                 playability_status: shortInfo.playability_status,
                                 accessibility_text: short.accessibility_text || ''
                             };
                             
+                            console.log('Processed short data:', JSON.stringify(shortData, null, 2));
                             shorts.push(shortData);
                             console.log(`Successfully processed short: ${shortData.video_id}`);
                         } catch (error) {
@@ -843,6 +864,15 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             continue;
           }
 
+          console.log('Raw short info:', JSON.stringify({
+              basic_info: shortInfo.basic_info,
+              primary_info: shortInfo.primary_info,
+              engagement_panels: shortInfo.engagement_panels,
+              microformat: shortInfo.microformat,
+              player_microformat: shortInfo.player_microformat,
+              video_details: shortInfo.video_details
+          }, null, 2));
+
           const shortData = {
             video_id: videoId,
             title: shortInfo.basic_info?.title || 
@@ -856,10 +886,16 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
                           short.thumbnail_url ||
                           `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-            published_at: extractPublishedDate(shortInfo) || 
+            published_at: shortInfo.microformat?.playerMicroformatRenderer?.publishDate || // Try this first
+                         shortInfo.video_details?.publishDate ||
+                         shortInfo.basic_info?.publishDate ||
+                         extractPublishedDate(shortInfo) || 
                          extractPublishedDate(short) ||
                          null,
-            views: extractViews(shortInfo) || 
+            views: shortInfo.videoPrimaryInfo?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
+                   shortInfo.basic_info?.view_count?.toString() ||
+                   shortInfo.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
+                   extractViews(shortInfo) || 
                    extractViews(short) || 
                    '0',
             channel_id: channel.metadata?.external_id || '',
@@ -871,6 +907,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             accessibility_text: short.accessibility_text || ''
           };
 
+          console.log('Processed short data:', JSON.stringify(shortData, null, 2));
           shorts.push(shortData);
           console.log(`Successfully processed short: ${shortData.video_id}`);
         } catch (error) {
@@ -927,6 +964,15 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                   continue;
                 }
 
+                console.log('Raw short info:', JSON.stringify({
+                    basic_info: shortInfo.basic_info,
+                    primary_info: shortInfo.primary_info,
+                    engagement_panels: shortInfo.engagement_panels,
+                    microformat: shortInfo.microformat,
+                    player_microformat: shortInfo.player_microformat,
+                    video_details: shortInfo.video_details
+                }, null, 2));
+
                 const shortData = {
                   video_id: videoId,
                   title: shortInfo.basic_info?.title || 
@@ -940,10 +986,16 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                   thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
                                 short.thumbnail_url ||
                                 `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                  published_at: extractPublishedDate(shortInfo) || 
+                  published_at: shortInfo.microformat?.playerMicroformatRenderer?.publishDate || // Try this first
+                               shortInfo.video_details?.publishDate ||
+                               shortInfo.basic_info?.publishDate ||
+                               extractPublishedDate(shortInfo) || 
                                extractPublishedDate(short) ||
                                null,
-                  views: extractViews(shortInfo) || 
+                  views: shortInfo.videoPrimaryInfo?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
+                         shortInfo.basic_info?.view_count?.toString() ||
+                         shortInfo.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
+                         extractViews(shortInfo) || 
                          extractViews(short) || 
                          '0',
                   channel_id: channel.metadata?.external_id || '',
@@ -955,6 +1007,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                   accessibility_text: short.accessibility_text || ''
                 };
 
+                console.log('Processed short data:', JSON.stringify(shortData, null, 2));
                 shorts.push(shortData);
                 console.log(`Successfully processed short: ${shortData.video_id}`);
               } catch (error) {
@@ -999,5 +1052,4 @@ initializeYouTube().then(() => {
 }).catch(error => {
     console.error('Failed to start server:', error);
     process.exit(1);
-}); 
 }); 
