@@ -1,9 +1,6 @@
 import express from 'express';
 import { Innertube } from 'youtubei.js';
 import cors from 'cors';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -661,15 +658,16 @@ app.get('/api/shorts/:videoId', async (req, res) => {
 });
 
 // Update the shorts processing section
-async function getShortInfo(videoId) {
+async function getShortInfo(videoId, channel) {
     try {
-        // First try getting info as a regular video
+        // Get video info using regular endpoint
         const videoInfo = await yt.getInfo(videoId);
         
-        // Log the raw response for debugging
-        console.log('Raw video info:', JSON.stringify(videoInfo, null, 2));
+        // Extract views from accessibility text if available
+        const viewsMatch = videoInfo.basic_info?.view_count?.toString() || 
+                         videoInfo.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
+                         '0';
 
-        // Extract data from the response
         const shortData = {
             video_id: videoId,
             title: videoInfo.basic_info?.title || '',
@@ -677,11 +675,12 @@ async function getShortInfo(videoId) {
             thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
                          `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
             published_at: videoInfo.basic_info?.publish_date || null,
-            views: videoInfo.basic_info?.view_count?.toString() || '0',
-            channel_id: videoInfo.basic_info?.channel?.id || '',
-            channel_title: videoInfo.basic_info?.channel?.name || '',
+            views: viewsMatch,
+            channel_id: channel?.metadata?.external_id || videoInfo.basic_info?.channel?.id || '',
+            channel_title: channel?.metadata?.title || videoInfo.basic_info?.channel?.name || '',
             duration: videoInfo.basic_info?.duration?.text || '',
-            is_short: true
+            is_short: true,
+            playability_status: videoInfo.playability_status
         };
 
         return shortData;
@@ -733,9 +732,9 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                     if (!videoId) continue;
 
                     // Get short info using regular video endpoint
-                    const shortInfo = await getShortInfo(videoId);
+                    const shortInfo = await getShortInfo(videoId, channel);
                     
-                    // Add accessibility data if available
+                    // Update views from accessibility text if available
                     if (short.accessibility_text) {
                         const viewMatch = short.accessibility_text.match(/(\d+[KMB]?)\s+views/i);
                         if (viewMatch) {
