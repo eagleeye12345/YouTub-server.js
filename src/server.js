@@ -757,7 +757,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
 
                 try {
                     regularInfo = await yt.getInfo(videoId);
-                    console.log('Got regular info for short:', videoId, regularInfo?.primary_info?.published?.text);
+                    console.log('Got regular info for short:', videoId);
                 } catch (error) {
                     console.warn('Failed to get regular info:', error);
                 }
@@ -770,6 +770,25 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                     primary_info: regularInfo?.primary_info || shortInfo?.primary_info
                 };
 
+                // Get exact view count
+                let viewCount = '';
+                if (regularInfo?.basic_info?.view_count) {
+                    // Use exact view count from basic_info
+                    viewCount = regularInfo.basic_info.view_count.toString();
+                } else if (regularInfo?.primary_info?.view_count?.text) {
+                    // Use view count from primary_info
+                    viewCount = regularInfo.primary_info.view_count.text.replace(/[^0-9]/g, '');
+                } else if (short.overlay_metadata?.secondary_text?.text) {
+                    // Fallback to overlay metadata
+                    viewCount = short.overlay_metadata.secondary_text.text.replace(/[^0-9.KMB]/gi, '');
+                } else if (short.accessibility_text) {
+                    // Last resort: try to extract from accessibility text
+                    const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i);
+                    viewCount = viewMatch ? viewMatch[1] : '0';
+                }
+
+                console.log('Extracted view count:', viewCount);
+
                 // Extract data directly from the combined info
                 const shortData = {
                     video_id: videoId,
@@ -780,10 +799,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                                  `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
                     published_at: regularInfo?.primary_info?.published?.text ? 
                                  new Date(regularInfo.primary_info.published.text).toISOString() : null,
-                    views: (short.overlay_metadata?.secondary_text?.text || '')
-                           .replace(/[^0-9.KMB]/gi, '') || 
-                           short.accessibility_text?.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i)?.[1] || 
-                           '0',
+                    views: viewCount,
                     channel_id: channel.metadata?.external_id || '',
                     channel_title: channel.metadata?.title || '',
                     duration: combinedInfo.basic_info?.duration?.text || '',
@@ -791,7 +807,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 };
 
                 processedShorts.push(shortData);
-                console.log('Successfully processed short:', videoId, 'published_at:', shortData.published_at);
+                console.log('Successfully processed short:', videoId, 'views:', viewCount);
 
             } catch (error) {
                 console.error('Error processing short:', error);
