@@ -772,12 +772,15 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
 
                 // Get exact view count
                 let viewCount = '';
-                if (regularInfo?.basic_info?.view_count) {
-                    // Use exact view count from basic_info
+                if (regularInfo?.primary_info?.view_count?.view_count?.text) {
+                    // Use exact view count from view_count.text (e.g., "245,906 views")
+                    viewCount = regularInfo.primary_info.view_count.view_count.text.replace(/[^0-9]/g, '');
+                } else if (regularInfo?.primary_info?.view_count?.original_view_count) {
+                    // Try original_view_count as backup
+                    viewCount = regularInfo.primary_info.view_count.original_view_count;
+                } else if (regularInfo?.basic_info?.view_count) {
+                    // Fallback to basic_info view count
                     viewCount = regularInfo.basic_info.view_count.toString();
-                } else if (regularInfo?.primary_info?.view_count?.text) {
-                    // Use view count from primary_info
-                    viewCount = regularInfo.primary_info.view_count.text.replace(/[^0-9]/g, '');
                 } else if (short.overlay_metadata?.secondary_text?.text) {
                     // Fallback to overlay metadata
                     viewCount = short.overlay_metadata.secondary_text.text.replace(/[^0-9.KMB]/gi, '');
@@ -787,7 +790,10 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                     viewCount = viewMatch ? viewMatch[1] : '0';
                 }
 
-                console.log('Extracted view count:', viewCount);
+                console.log('Extracted view count:', {
+                    raw: regularInfo?.primary_info?.view_count,
+                    extracted: viewCount
+                });
 
                 // Extract data directly from the combined info
                 const shortData = {
