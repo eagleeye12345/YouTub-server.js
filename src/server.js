@@ -155,54 +155,73 @@ function parseYouTubeDate(dateStr) {
     }
 }
 
-// Update the extractPublishedDate helper function to handle more cases
+// Add debug logging helper
+function debugLogObject(prefix, obj) {
+    console.log(`${prefix}:`, JSON.stringify(obj, null, 2));
+}
+
+// Update extractPublishedDate function
 function extractPublishedDate(short) {
     try {
-        // Check for microformat data first (most reliable)
-        if (short.microformat?.publishDate) {
-            return new Date(short.microformat.publishDate).toISOString();
-        }
+        debugLogObject('Extracting date from object', {
+            microformat: short.microformat,
+            player_microformat: short.player_microformat,
+            basic_info: short.basic_info,
+            primary_info: short.primary_info,
+            videoPrimaryInfo: short.videoPrimaryInfo,
+            publishedTimeText: short.publishedTimeText,
+            published: short.published,
+            accessibility_text: short.accessibility_text
+        });
 
-        // Check player microformat
-        if (short.player_microformat?.publish_date) {
-            return new Date(short.player_microformat.publish_date).toISOString();
-        }
-
-        // Check basic info
-        if (short.basic_info?.publish_date) {
-            return new Date(short.basic_info.publish_date).toISOString();
-        }
-
-        // Check primary info
-        if (short.primary_info?.published?.simpleText) {
-            return parseYouTubeDate(short.primary_info.published.simpleText);
-        }
-
-        // Check video primary info
-        if (short.videoPrimaryInfo?.dateText?.simpleText) {
-            return parseYouTubeDate(short.videoPrimaryInfo.dateText.simpleText);
-        }
-
-        // Try published text directly
-        if (short.publishedTimeText?.simpleText) {
-            return parseYouTubeDate(short.publishedTimeText.simpleText);
-        }
-
-        // Try published property
-        if (short.published?.text) {
-            return parseYouTubeDate(short.published.text);
-        }
-
-        // Try accessibility text
-        if (short.accessibility_text) {
-            const dateMatch = short.accessibility_text.match(
-                /(?:uploaded|posted|published|streamed)\s+(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i
-            );
-            if (dateMatch) {
-                return parseYouTubeDate(dateMatch[1]);
+        // Try primary info first (most reliable for shorts)
+        if (short.primary_info?.published) {
+            const publishedText = short.primary_info.published.text || 
+                                short.primary_info.published.simpleText;
+            if (publishedText) {
+                console.log('Found date in primary_info:', publishedText);
+                return parseYouTubeDate(publishedText);
             }
         }
 
+        // Try video details
+        if (short.video_details?.publishDate) {
+            console.log('Found date in video_details:', short.video_details.publishDate);
+            return new Date(short.video_details.publishDate).toISOString();
+        }
+
+        // Try microformat
+        if (short.microformat?.playerMicroformatRenderer?.publishDate) {
+            console.log('Found date in microformat:', short.microformat.playerMicroformatRenderer.publishDate);
+            return new Date(short.microformat.playerMicroformatRenderer.publishDate).toISOString();
+        }
+
+        // Try basic info
+        if (short.basic_info?.publishDate || short.basic_info?.publish_date) {
+            const date = short.basic_info.publishDate || short.basic_info.publish_date;
+            console.log('Found date in basic_info:', date);
+            return new Date(date).toISOString();
+        }
+
+        // Try accessibility label
+        if (short.accessibility?.accessibilityData?.label) {
+            const match = short.accessibility.accessibilityData.label.match(
+                /(?:uploaded|posted|published|streamed)\s+(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i
+            );
+            if (match) {
+                console.log('Found date in accessibility label:', match[1]);
+                return parseYouTubeDate(match[1]);
+            }
+        }
+
+        // Try published text
+        if (short.publishedTimeText?.simpleText || short.publishedTimeText?.text) {
+            const text = short.publishedTimeText.simpleText || short.publishedTimeText.text;
+            console.log('Found date in publishedTimeText:', text);
+            return parseYouTubeDate(text);
+        }
+
+        console.log('No valid date found in object');
         return null;
     } catch (error) {
         console.error('Error extracting published date:', error);
@@ -210,44 +229,54 @@ function extractPublishedDate(short) {
     }
 }
 
-// Add helper function to extract views
+// Update extractViews function
 function extractViews(short) {
     try {
-        // Try basic info first
-        if (short.basic_info?.view_count) {
-            return short.basic_info.view_count.toString();
-        }
+        debugLogObject('Extracting views from object', {
+            basic_info: short.basic_info,
+            videoPrimaryInfo: short.videoPrimaryInfo,
+            view_count: short.view_count,
+            short_view_count: short.short_view_count,
+            overlay_stats: short.overlay_stats,
+            accessibility_text: short.accessibility_text
+        });
 
-        // Try video primary info
-        if (short.videoPrimaryInfo?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
-            return short.videoPrimaryInfo.viewCount.videoViewCountRenderer.viewCount.simpleText;
-        }
-
-        // Try view count text
-        if (short.view_count?.text) {
-            const viewText = short.view_count.text;
-            // Convert view text to number (e.g., "1.5M views" -> "1500000")
+        // Try engagement panel first
+        if (short.engagementPanel?.engagementPanelSectionListRenderer?.content?.viewCount) {
+            const viewText = short.engagementPanel.engagementPanelSectionListRenderer.content.viewCount.videoViewCountRenderer.viewCount.simpleText;
+            console.log('Found views in engagement panel:', viewText);
             return viewText.replace(/[^0-9.KMB]/gi, '');
         }
 
-        // Try short view count
-        if (short.short_view_count?.text) {
-            return short.short_view_count.text.replace(/[^0-9.KMB]/gi, '');
+        // Try video primary info
+        if (short.primary_info?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
+            const viewText = short.primary_info.viewCount.videoViewCountRenderer.viewCount.simpleText;
+            console.log('Found views in primary info:', viewText);
+            return viewText.replace(/[^0-9.KMB]/gi, '');
         }
 
-        // Try overlay stats
-        if (short.overlay_stats?.[0]?.text) {
-            return short.overlay_stats[0].text.replace(/[^0-9.KMB]/gi, '');
+        // Try basic info
+        if (short.basic_info?.view_count) {
+            console.log('Found views in basic info:', short.basic_info.view_count);
+            return short.basic_info.view_count.toString();
         }
 
-        // Try accessibility text for view count
+        // Try accessibility text
         if (short.accessibility_text) {
-            const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?) views/i);
+            const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s+views?/i);
             if (viewMatch) {
+                console.log('Found views in accessibility text:', viewMatch[1]);
                 return viewMatch[1];
             }
         }
 
+        // Try overlay stats
+        if (short.overlay_stats?.[0]?.text?.simpleText) {
+            console.log('Found views in overlay stats:', short.overlay_stats[0].text.simpleText);
+            return short.overlay_stats[0].text.simpleText.replace(/[^0-9.KMB]/gi, '');
+        }
+
+        console.log('No valid view count found in object');
         return '0';
     } catch (error) {
         console.error('Error extracting views:', error);
@@ -829,7 +858,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                           `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
             published_at: extractPublishedDate(shortInfo) || 
                          extractPublishedDate(short) ||
-                         null, // Don't fallback to current date
+                         null,
             views: extractViews(shortInfo) || 
                    extractViews(short) || 
                    '0',
@@ -913,7 +942,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                                 `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
                   published_at: extractPublishedDate(shortInfo) || 
                                extractPublishedDate(short) ||
-                               null, // Don't fallback to current date
+                               null,
                   views: extractViews(shortInfo) || 
                          extractViews(short) || 
                          '0',
@@ -970,4 +999,5 @@ initializeYouTube().then(() => {
 }).catch(error => {
     console.error('Failed to start server:', error);
     process.exit(1);
+}); 
 }); 
