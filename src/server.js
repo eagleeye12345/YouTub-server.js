@@ -745,36 +745,48 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
 
                 console.log('Processing short:', videoId);
 
-                // Fetch additional info for the short to get publish date
+                // Fetch both shorts and regular info
                 let shortInfo;
+                let regularInfo;
+
                 try {
                     shortInfo = await yt.getShortsVideoInfo(videoId);
                 } catch (error) {
-                    console.warn('Failed to get shorts info, trying fallback to regular video info');
-                    try {
-                        shortInfo = await yt.getInfo(videoId);
-                    } catch (fallbackError) {
-                        console.error('Both shorts and regular info fetch failed:', fallbackError);
-                        shortInfo = null;
-                    }
+                    console.warn('Failed to get shorts info:', error);
                 }
 
-                // Extract data directly from the short object and shortInfo
+                try {
+                    regularInfo = await yt.getInfo(videoId);
+                    console.log('Got regular info for short:', videoId, regularInfo?.primary_info?.published?.text);
+                } catch (error) {
+                    console.warn('Failed to get regular info:', error);
+                }
+
+                // Combine the info objects
+                const combinedInfo = {
+                    ...shortInfo,
+                    regularInfo: regularInfo,
+                    raw: shortInfo || regularInfo,
+                    primary_info: regularInfo?.primary_info || shortInfo?.primary_info
+                };
+
+                // Extract data directly from the combined info
                 const shortData = {
                     video_id: videoId,
                     title: short.overlay_metadata?.primary_text?.text || 
                            short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
-                    description: shortInfo?.basic_info?.description || '',
+                    description: combinedInfo.basic_info?.description || '',
                     thumbnail_url: short.thumbnail?.[0]?.url || 
                                  `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                    published_at: extractPublishedDate(shortInfo) || extractPublishedDate(short),
+                    published_at: regularInfo?.primary_info?.published?.text ? 
+                                 new Date(regularInfo.primary_info.published.text).toISOString() : null,
                     views: (short.overlay_metadata?.secondary_text?.text || '')
                            .replace(/[^0-9.KMB]/gi, '') || 
                            short.accessibility_text?.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i)?.[1] || 
                            '0',
                     channel_id: channel.metadata?.external_id || '',
                     channel_title: channel.metadata?.title || '',
-                    duration: shortInfo?.basic_info?.duration?.text || '',
+                    duration: combinedInfo.basic_info?.duration?.text || '',
                     is_short: true
                 };
 
