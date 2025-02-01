@@ -166,8 +166,15 @@ function debugLogObject(prefix, obj) {
 // Update the extractPublishedDate function with more paths and debugging
 function extractPublishedDate(short) {
     try {
+        console.log('Extracting date from:', JSON.stringify({
+            regularInfo_path: short?.regularInfo?.primary_info?.published?.text,
+            primary_info_path: short?.primary_info?.published?.text,
+            raw_path: short?.raw?.primary_info?.published?.text,
+            relative_date: short?.primary_info?.relative_date?.text
+        }, null, 2));
+
         // Check regularInfo path first
-        if (short.regularInfo?.primary_info?.published?.text) {
+        if (short?.regularInfo?.primary_info?.published?.text) {
             const dateStr = short.regularInfo.primary_info.published.text;
             console.log('Found date in regularInfo:', dateStr);
             const parsedDate = new Date(dateStr);
@@ -177,7 +184,7 @@ function extractPublishedDate(short) {
         }
 
         // Check primary_info path
-        if (short.primary_info?.published?.text) {
+        if (short?.primary_info?.published?.text) {
             const dateStr = short.primary_info.published.text;
             console.log('Found date in primary_info:', dateStr);
             const parsedDate = new Date(dateStr);
@@ -187,42 +194,9 @@ function extractPublishedDate(short) {
         }
 
         // Check raw data path
-        if (short.raw?.primary_info?.published?.text) {
+        if (short?.raw?.primary_info?.published?.text) {
             const dateStr = short.raw.primary_info.published.text;
             console.log('Found date in raw data:', dateStr);
-            const parsedDate = new Date(dateStr);
-            if (!isNaN(parsedDate.getTime())) {
-                return parsedDate.toISOString();
-            }
-        }
-
-        // Also check relative date as backup
-        if (short.primary_info?.relative_date?.text) {
-            const relativeDate = short.primary_info.relative_date.text;
-            console.log('Found relative date:', relativeDate);
-            return parseYouTubeDate(relativeDate);
-        }
-
-        // Keep the rest as fallback
-        const possibleDates = [
-            short.microformat?.playerMicroformatRenderer?.publishDate,
-            short.microformat?.playerMicroformatRenderer?.uploadDate,
-            short.basic_info?.publish_date,
-            short.video_details?.publishDate,
-            short.published?.text,
-            typeof short.published === 'string' ? short.published : null
-        ];
-
-        for (const dateStr of possibleDates) {
-            if (!dateStr) continue;
-            console.log('Checking fallback date:', dateStr);
-
-            // If it's already an ISO date string, return it
-            if (dateStr.includes('T') && dateStr.includes('Z')) {
-                return dateStr;
-            }
-
-            // Try parsing as a regular date
             const parsedDate = new Date(dateStr);
             if (!isNaN(parsedDate.getTime())) {
                 return parsedDate.toISOString();
@@ -646,12 +620,14 @@ app.get('/api/shorts/:videoId', async (req, res) => {
         
         try {
             shortInfo = await yt.getShortsVideoInfo(req.params.videoId);
+            console.log('Got shorts info:', JSON.stringify(shortInfo?.primary_info, null, 2));
         } catch (error) {
-            console.warn('Failed to get shorts info, trying fallback to regular video info');
+            console.warn('Failed to get shorts info:', error);
         }
 
         try {
             regularInfo = await yt.getInfo(req.params.videoId);
+            console.log('Got regular info:', JSON.stringify(regularInfo?.primary_info, null, 2));
         } catch (error) {
             console.warn('Failed to get regular info:', error);
         }
@@ -664,8 +640,11 @@ app.get('/api/shorts/:videoId', async (req, res) => {
         const combinedInfo = {
             ...shortInfo,
             regularInfo: regularInfo,
-            raw: shortInfo || regularInfo
+            raw: shortInfo || regularInfo,
+            primary_info: regularInfo?.primary_info || shortInfo?.primary_info
         };
+
+        console.log('Combined info primary_info:', JSON.stringify(combinedInfo.primary_info, null, 2));
 
         const simplifiedInfo = {
             video_id: combinedInfo.basic_info?.id || req.params.videoId,
@@ -684,6 +663,7 @@ app.get('/api/shorts/:videoId', async (req, res) => {
             playability_status: combinedInfo.playability_status
         };
 
+        console.log('Final simplified info:', JSON.stringify(simplifiedInfo, null, 2));
         res.json(simplifiedInfo);
     } catch (error) {
         console.error('Shorts error:', error);
