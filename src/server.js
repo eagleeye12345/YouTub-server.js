@@ -163,36 +163,54 @@ function debugLogObject(prefix, obj) {
     console.log(`${prefix}:`, JSON.stringify(obj, null, 2));
 }
 
-// Update extractPublishedDate function
+// First, update the extractPublishedDate function to handle more cases
 function extractPublishedDate(short) {
     try {
-        // Try microformat first (most reliable)
-        if (short.microformat?.playerMicroformatRenderer?.publishDate) {
-            const date = new Date(short.microformat.playerMicroformatRenderer.publishDate);
-            if (!isNaN(date.getTime())) {
-                return date.toISOString();
-            }
-        }
+        // Try all possible paths for publish date
+        const possibleDates = [
+            // Try microformat (most reliable)
+            short.microformat?.playerMicroformatRenderer?.publishDate,
+            short.microformat?.playerMicroformatRenderer?.uploadDate,
+            short.microformat?.playerMicroformatRenderer?.dateText?.simpleText,
+            
+            // Try basic info
+            short.basic_info?.publish_date,
+            short.basic_info?.uploadDate,
+            
+            // Try primary info
+            short.primary_info?.dateText?.simpleText,
+            short.primary_info?.uploadDate,
+            
+            // Try video details
+            short.video_details?.publishDate,
+            short.video_details?.uploadDate,
+            
+            // Try overlay metadata
+            short.overlay_metadata?.published_time?.text,
+            
+            // Try accessibility data
+            short.accessibility_text
+        ];
 
-        // Try accessibility text
-        if (short.accessibility_text) {
-            const uploadMatch = short.accessibility_text.match(/(?:uploaded|posted|published|premiered)\s+(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
-            if (uploadMatch) {
-                return parseYouTubeDate(uploadMatch[1]);
-            }
-        }
+        for (const dateStr of possibleDates) {
+            if (!dateStr) continue;
 
-        // Try video details
-        if (short.video_details?.publishDate) {
-            const date = new Date(short.video_details.publishDate);
-            if (!isNaN(date.getTime())) {
-                return date.toISOString();
+            // If it's already an ISO date string, return it
+            if (dateStr.includes('T') && dateStr.includes('Z')) {
+                return dateStr;
             }
-        }
 
-        // Try primary info
-        if (short.primary_info?.dateText?.simpleText) {
-            return parseYouTubeDate(short.primary_info.dateText.simpleText);
+            // Try parsing relative time from accessibility text
+            const relativeMatch = dateStr.match(/(?:uploaded|posted|published|premiered|streamed)\s+(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
+            if (relativeMatch) {
+                return parseYouTubeDate(relativeMatch[1]);
+            }
+
+            // Try parsing as a regular date
+            const parsedDate = new Date(dateStr);
+            if (!isNaN(parsedDate.getTime())) {
+                return parsedDate.toISOString();
+            }
         }
 
         return null;
@@ -731,27 +749,41 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
 
                 console.log('Processing short:', videoId);
 
-                // Extract data directly from the short object
+                // Fetch additional info for the short to get publish date
+                let shortInfo;
+                try {
+                    shortInfo = await yt.getShortsVideoInfo(videoId);
+                } catch (error) {
+                    console.warn('Failed to get shorts info, trying fallback to regular video info');
+                    try {
+                        shortInfo = await yt.getInfo(videoId);
+                    } catch (fallbackError) {
+                        console.error('Both shorts and regular info fetch failed:', fallbackError);
+                        shortInfo = null;
+                    }
+                }
+
+                // Extract data directly from the short object and shortInfo
                 const shortData = {
                     video_id: videoId,
                     title: short.overlay_metadata?.primary_text?.text || 
                            short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
-                    description: '',  // Shorts typically don't have descriptions
+                    description: shortInfo?.basic_info?.description || '',
                     thumbnail_url: short.thumbnail?.[0]?.url || 
                                  `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                    published_at: null,  // We'll need to fetch this separately if needed
+                    published_at: extractPublishedDate(shortInfo) || extractPublishedDate(short),
                     views: (short.overlay_metadata?.secondary_text?.text || '')
                            .replace(/[^0-9.KMB]/gi, '') || 
                            short.accessibility_text?.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i)?.[1] || 
                            '0',
                     channel_id: channel.metadata?.external_id || '',
                     channel_title: channel.metadata?.title || '',
-                    duration: '',  // Shorts are typically < 60 seconds
+                    duration: shortInfo?.basic_info?.duration?.text || '',
                     is_short: true
                 };
 
                 processedShorts.push(shortData);
-                console.log('Successfully processed short:', videoId);
+                console.log('Successfully processed short:', videoId, 'published_at:', shortData.published_at);
 
             } catch (error) {
                 console.error('Error processing short:', error);
