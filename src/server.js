@@ -657,108 +657,134 @@ app.get('/api/shorts/:videoId', async (req, res) => {
     }
 });
 
-// Update the shorts processing section
-async function getShortInfo(videoId, channel) {
-    try {
-        // Get video info using regular endpoint
-        const videoInfo = await yt.getInfo(videoId);
-        
-        // Extract views from accessibility text if available
-        const viewsMatch = videoInfo.basic_info?.view_count?.toString() || 
-                         videoInfo.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText ||
-                         '0';
-
-        const shortData = {
-            video_id: videoId,
-            title: videoInfo.basic_info?.title || '',
-            description: videoInfo.basic_info?.description || '',
-            thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
-                         `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-            published_at: videoInfo.basic_info?.publish_date || null,
-            views: viewsMatch,
-            channel_id: channel?.metadata?.external_id || videoInfo.basic_info?.channel?.id || '',
-            channel_title: channel?.metadata?.title || videoInfo.basic_info?.channel?.name || '',
-            duration: videoInfo.basic_info?.duration?.text || '',
-            is_short: true,
-            playability_status: videoInfo.playability_status
-        };
-
-        return shortData;
-    } catch (error) {
-        console.error(`Error getting short info for ${videoId}:`, error);
-        throw error;
-    }
-}
-
 // Update the channel shorts endpoint
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 30;
         
+        console.log('Fetching shorts for channel:', req.params.channelId);
+        
         // Get channel
         const channel = await yt.getChannel(req.params.channelId);
+        
+        // Debug channel data
+        console.log('Channel data:', {
+            id: channel.metadata?.external_id,
+            has_shorts: channel.has_shorts,
+            available_tabs: channel.available_tabs
+        });
+
         if (!channel.has_shorts) {
             return res.json({
                 shorts: [],
-                pagination: { has_more: false }
+                pagination: { 
+                    has_more: false,
+                    current_page: page,
+                    items_per_page: limit,
+                    total_items: 0
+                }
             });
         }
 
         // Get shorts tab
         const shortsTab = await channel.getShorts();
+        console.log('Got shorts tab, videos count:', shortsTab?.videos?.length);
+
         let currentBatch = shortsTab;
-        
-        // Skip to requested page
-        let currentPage = 1;
-        while (currentPage < page && currentBatch?.has_continuation) {
-            currentBatch = await currentBatch.getContinuation();
-            currentPage++;
-        }
+        let allShorts = [];
 
-        // Process shorts
-        const shorts = [];
-        if (currentBatch?.videos) {
-            const startIdx = 0;
-            const endIdx = Math.min(limit, currentBatch.videos.length);
-            
-            // Process each short
-            for (const short of currentBatch.videos.slice(startIdx, endIdx)) {
+        // Collect all shorts up to the requested page
+        for (let currentPage = 1; currentPage <= page; currentPage++) {
+            if (currentBatch?.videos?.length) {
+                allShorts = allShorts.concat(currentBatch.videos);
+            }
+
+            if (currentPage < page && currentBatch?.has_continuation) {
                 try {
-                    const videoId = short.id || 
-                                  short.videoId || 
-                                  short.navigationEndpoint?.watchEndpoint?.videoId;
-                    
-                    if (!videoId) continue;
-
-                    // Get short info using regular video endpoint
-                    const shortInfo = await getShortInfo(videoId, channel);
-                    
-                    // Update views from accessibility text if available
-                    if (short.accessibility_text) {
-                        const viewMatch = short.accessibility_text.match(/(\d+[KMB]?)\s+views/i);
-                        if (viewMatch) {
-                            shortInfo.views = viewMatch[1];
-                        }
-                    }
-
-                    shorts.push(shortInfo);
+                    currentBatch = await currentBatch.getContinuation();
+                    console.log(`Got continuation for page ${currentPage + 1}, videos:`, currentBatch?.videos?.length);
                 } catch (error) {
-                    console.error('Error processing short:', error);
-                    continue;
+                    console.error('Error getting continuation:', error);
+                    break;
                 }
             }
         }
 
-        res.json({
-            shorts,
+        // Calculate the slice for the current page
+        const startIndex = (page - 1) * limit;
+        const endIndex = startIndex + limit;
+        const shortsForCurrentPage = allShorts.slice(startIndex, endIndex);
+
+        console.log(`Processing ${shortsForCurrentPage.length} shorts for page ${page}`);
+
+        // Process shorts
+        const processedShorts = [];
+        for (const short of shortsForCurrentPage) {
+            try {
+                // Get video ID from various possible locations
+                const videoId = short.id?.videoId || // Try new format first
+                              short.id || // Then try old format
+                              short.video_id ||
+                              (typeof short === 'string' ? short : null);
+
+                if (!videoId) {
+                    console.warn('Could not extract video ID from short:', short);
+                    continue;
+                }
+
+                console.log('Processing short:', videoId);
+
+                // Get video info
+                const videoInfo = await yt.getInfo(videoId);
+                
+                // Extract views from accessibility text
+                const viewsMatch = short.accessibility?.accessibilityData?.label?.match(/(\d+[KMB]?)\s+views/i) ||
+                                 short.accessibility_text?.match(/(\d+[KMB]?)\s+views/i);
+                
+                const shortData = {
+                    video_id: videoId,
+                    title: videoInfo.basic_info?.title || 
+                           short.title?.text || 
+                           short.title || 
+                           '',
+                    description: videoInfo.basic_info?.description || 
+                                short.description?.text || 
+                                '',
+                    thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
+                                 short.thumbnail?.[0]?.url ||
+                                 `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                    published_at: videoInfo.basic_info?.publish_date || null,
+                    views: viewsMatch?.[1] || 
+                           videoInfo.basic_info?.view_count?.toString() || 
+                           '0',
+                    channel_id: channel.metadata?.external_id || '',
+                    channel_title: channel.metadata?.title || '',
+                    duration: videoInfo.basic_info?.duration?.text || '',
+                    is_short: true
+                };
+
+                processedShorts.push(shortData);
+                console.log('Successfully processed short:', videoId);
+
+            } catch (error) {
+                console.error('Error processing short:', error);
+                continue;
+            }
+        }
+
+        const response = {
+            shorts: processedShorts,
             pagination: {
                 has_more: currentBatch?.has_continuation || false,
                 current_page: page,
                 items_per_page: limit,
-                total_items: shorts.length
+                total_items: processedShorts.length
             }
-        });
+        };
+
+        console.log(`Returning ${processedShorts.length} shorts`);
+        res.json(response);
 
     } catch (error) {
         console.error('Channel shorts error:', error);
