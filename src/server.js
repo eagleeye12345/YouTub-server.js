@@ -155,6 +155,48 @@ function parseYouTubeDate(dateStr) {
     }
 }
 
+// First, let's improve the extractPublishedDate helper function
+function extractPublishedDate(short) {
+    try {
+        // Check all possible date locations in order of reliability
+        if (short.basic_info?.publish_date) {
+            return new Date(short.basic_info.publish_date).toISOString();
+        }
+        
+        if (short.publishedTimeText?.text || short.publishedTimeText) {
+            const dateText = typeof short.publishedTimeText === 'string' 
+                ? short.publishedTimeText 
+                : short.publishedTimeText.text;
+            return parseYouTubeDate(dateText);
+        }
+
+        // Try published property
+        if (short.published?.text) {
+            return parseYouTubeDate(short.published.text);
+        }
+
+        // Try accessibility text for date
+        if (short.accessibility_text) {
+            const dateMatch = short.accessibility_text.match(
+                /(?:uploaded|posted|published|streamed)\s+(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i
+            );
+            if (dateMatch) {
+                return parseYouTubeDate(dateMatch[1]);
+            }
+        }
+
+        // Try overlay metadata
+        if (short.overlay_metadata?.published_time?.text) {
+            return parseYouTubeDate(short.overlay_metadata.published_time.text);
+        }
+
+        return null;
+    } catch (error) {
+        console.error('Error extracting published date:', error);
+        return null;
+    }
+}
+
 // Get channel videos endpoint
 app.get('/api/channel/:channelId/videos', async (req, res) => {
     try {
@@ -543,81 +585,61 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
   }
 });
 
-// Get shorts info endpoint
+// Update the shorts processing logic in the /api/shorts/:videoId endpoint
 app.get('/api/shorts/:videoId', async (req, res) => {
-  try {
-    const shortsInfo = await yt.getShortsVideoInfo(req.params.videoId);
-    if (!shortsInfo || !shortsInfo.basic_info) {
-      return res.status(404).json({ error: 'Short not found or not available' });
-    }
+    try {
+        let shortInfo;
+        try {
+            shortInfo = await yt.getShortsVideoInfo(req.params.videoId);
+        } catch (error) {
+            console.warn('Failed to get shorts info, trying fallback to regular video info');
+            shortInfo = await yt.getInfo(req.params.videoId);
+        }
 
-    const simplifiedInfo = {
-      video_id: shortsInfo.basic_info?.id,
-      title: shortsInfo.basic_info?.title,
-      description: shortsInfo.basic_info?.description,
-      thumbnail_url: shortsInfo.basic_info?.thumbnail?.[0]?.url,
-      views: shortsInfo.basic_info?.view_count,
-      published_at: shortsInfo.basic_info?.publish_date,
-      channel_id: shortsInfo.basic_info?.channel?.id,
-      channel_title: shortsInfo.basic_info?.channel?.name,
-      channel_thumbnail: shortsInfo.basic_info?.channel?.thumbnails?.[0]?.url,
-      duration: shortsInfo.basic_info?.duration?.text,
-      is_short: true,
-      playability_status: shortsInfo.playability_status
-    };
-    res.json(simplifiedInfo);
-  } catch (error) {
-    console.error('Shorts error:', error);
-    res.status(500).json({ error: error.message });
-  }
+        if (!shortInfo || !shortInfo.basic_info) {
+            return res.status(404).json({ error: 'Short not found or not available' });
+        }
+
+        // Extract title from multiple possible locations
+        const title = shortInfo.basic_info.title ||
+                     shortInfo.primary_info?.title?.text ||
+                     shortInfo.overlay_metadata?.primary_text?.text ||
+                     '';
+
+        // Extract description from multiple possible locations
+        const description = shortInfo.basic_info.description ||
+                          shortInfo.primary_info?.description?.text ||
+                          shortInfo.description_snippet?.text ||
+                          '';
+
+        const simplifiedInfo = {
+            video_id: shortInfo.basic_info.id,
+            title: title,
+            description: description,
+            thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url ||
+                         `https://i.ytimg.com/vi/${req.params.videoId}/hqdefault.jpg`,
+            views: shortInfo.basic_info.view_count || 
+                  shortInfo.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+            published_at: shortInfo.basic_info.publish_date || 
+                         extractPublishedDate(shortInfo) ||
+                         new Date().toISOString(), // Fallback to current date if nothing else works
+            channel_id: shortInfo.basic_info.channel?.id,
+            channel_title: shortInfo.basic_info.channel?.name,
+            channel_thumbnail: shortInfo.basic_info.channel?.thumbnails?.[0]?.url,
+            duration: shortInfo.basic_info.duration?.text || '',
+            is_short: true,
+            playability_status: shortInfo.playability_status
+        };
+        res.json(simplifiedInfo);
+    } catch (error) {
+        console.error('Shorts error:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // Get channel shorts endpoint with pagination
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
   try {
-    // Helper function to extract published date from shorts data
-    const extractPublishedDate = (short) => {
-        // Try to extract from accessibility text first (most reliable for shorts)
-        if (short.accessibility_text) {
-            // Look for date patterns in accessibility text
-            const dateMatch = short.accessibility_text.match(/(?:uploaded |posted |published )?(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
-            if (dateMatch) {
-                return parseYouTubeDate(dateMatch[1]);
-            }
-        }
-
-        // Try to get date from video metadata
-        if (short.metadata?.publishDate) {
-            return new Date(short.metadata.publishDate).toISOString();
-        }
-
-        // Try published text if available
-        if (short.published?.text) {
-            return parseYouTubeDate(short.published.text);
-        }
-
-        // Try to extract from basic info
-        if (short.basic_info?.publish_date) {
-            return new Date(short.basic_info.publish_date).toISOString();
-        }
-
-        // Try to extract from overlay metadata
-        if (short.overlay_metadata?.published_time?.text) {
-            return parseYouTubeDate(short.overlay_metadata.published_time.text);
-        }
-
-        // Try to extract from description
-        if (short.description_snippet?.text) {
-            const descMatch = short.description_snippet.text.match(/(\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i);
-            if (descMatch) {
-                return parseYouTubeDate(descMatch[1]);
-            }
-        }
-
-        // Return null instead of current date if no date found
-        return null;
-    };
-
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 30;
     
@@ -771,21 +793,28 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
 
           const shortData = {
             video_id: videoId,
-            title: shortInfo.basic_info.title || short.title || '',
-            description: shortInfo.basic_info.description || 
+            title: shortInfo.basic_info?.title || 
+                   shortInfo.primary_info?.title?.text ||
+                   short.title?.text ||
+                   short.overlay_metadata?.primary_text?.text || '',
+            description: shortInfo.basic_info?.description || 
+                        shortInfo.primary_info?.description?.text ||
                         short.description_snippet?.text || 
                         short.description?.text || '',
-            thumbnail_url: shortInfo.basic_info.thumbnail?.[0]?.url || 
-                         short.thumbnail_url ||
-                         `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-            published_at: shortInfo.basic_info.publish_date || 
+            thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
+                          short.thumbnail_url ||
+                          `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+            published_at: shortInfo.basic_info?.publish_date || 
                          extractPublishedDate(short) ||
-                         null,
-            views: shortInfo.basic_info.view_count?.toString() || 
+                         extractPublishedDate(shortInfo) ||
+                         new Date().toISOString(), // Fallback to current date if nothing else works
+            views: shortInfo.basic_info?.view_count?.toString() || 
+                   short.view_count?.text?.replace(/[^0-9]/g, '') ||
                    short.views?.replace(/[^0-9]/g, '') || '0',
             channel_id: channel.metadata?.external_id || '',
             channel_title: channel.metadata?.title || '',
-            duration: shortInfo.basic_info.duration?.text || short.duration?.text || '',
+            duration: shortInfo.basic_info?.duration?.text || 
+                      short.duration?.text || '',
             is_short: true,
             playability_status: shortInfo.playability_status,
             accessibility_text: short.accessibility_text || ''
