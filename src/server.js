@@ -452,41 +452,22 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 30;
         
-        console.log('Fetching shorts for channel:', req.params.channelId);
-        
         // Get channel
         const channel = await yt.getChannel(req.params.channelId);
-        
-        if (!channel.has_shorts) {
-            return res.json({
-                shorts: [],
-                pagination: { 
-                    has_more: false,
-                    current_page: page,
-                    items_per_page: limit,
-                    total_items: 0
-                }
-            });
-        }
-
-        // Get shorts tab
-        const shortsTab = await channel.getShorts();
-        let currentBatch = shortsTab;
-        let currentPage = 1;
-
-        // Skip to requested page
-        while (currentPage < page && currentBatch?.has_continuation) {
-            currentBatch = await currentBatch.getContinuation();
-            currentPage++;
-        }
+        const currentBatch = await channel.getShorts({ limit, page });
 
         // Process current page shorts
         const shorts = currentBatch?.videos?.slice(0, limit)?.map(short => {
-            // Extract video ID from on_tap_endpoint
             const videoId = short.on_tap_endpoint?.payload?.videoId;
             if (!videoId) return null;
 
-            // Extract data directly from the short object
+            // Extract publish date using similar approach to FreeTube
+            const publishedAt = short.publishedTimeText?.text || // Primary source
+                              short.published?.text || // Fallback 1
+                              short.overlayTimeStatus?.text || // Fallback 2
+                              short.badges?.[0]?.metadata?.publishedTime || // Fallback 3
+                              null;
+
             return {
                 video_id: videoId,
                 title: short.overlay_metadata?.primary_text?.text || 
@@ -494,10 +475,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 description: short.description_snippet?.text || '',
                 thumbnail_url: short.thumbnail?.[0]?.url || 
                              `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                published_at: short.published_time?.text || 
-                             short.published?.text || 
-                             short.metadata?.published || 
-                             null,
+                published_at: publishedAt,
                 views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
                 channel_id: channel.metadata?.external_id || '',
                 channel_title: channel.metadata?.title || '',
