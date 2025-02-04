@@ -446,7 +446,7 @@ app.get('/api/shorts/:videoId', async (req, res) => {
     }
 });
 
-// Update the channel shorts endpoint to be more efficient
+// Update the channel shorts endpoint
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -454,50 +454,20 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         
         console.log('Fetching shorts for channel:', req.params.channelId);
         
-        // Get channel instance like FreeTube does
+        // Get channel
         const channel = await yt.getChannel(req.params.channelId);
-        console.log('Got channel:', {
+        
+        // Debug channel data
+        console.log('Channel data:', {
             id: channel.metadata?.external_id,
-            title: channel.metadata?.title,
-            hasShorts: channel.has_shorts
+            has_shorts: channel.has_shorts,
+            available_tabs: channel.available_tabs
         });
 
-        // Get shorts tab using the same method as FreeTube
-        const shortsTab = await channel.getShorts();
-        console.log('Got shorts tab:', {
-            hasContent: !!shortsTab?.content,
-            hasVideos: !!shortsTab?.videos,
-            videoCount: shortsTab?.videos?.length,
-            filterCount: shortsTab?.filters?.length
-        });
-
-        // Apply sorting if available (matching FreeTube's implementation)
-        const sortBy = req.query.sortBy || 'newest';
-        let currentTab = shortsTab;
-        
-        if (shortsTab?.filters?.length > 0 && sortBy !== 'newest') {
-            const filterIndex = ['newest', 'popular'].indexOf(sortBy);
-            if (filterIndex >= 0 && filterIndex < shortsTab.filters.length) {
-                console.log(`Applying ${sortBy} filter`);
-                currentTab = await shortsTab.applyFilter(shortsTab.filters[filterIndex]);
-            }
-        }
-
-        // Handle pagination like FreeTube
-        let currentBatch = currentTab;
-        let currentPage = 1;
-        
-        while (currentPage < page && currentBatch?.has_continuation) {
-            console.log(`Getting continuation for page ${currentPage + 1}`);
-            currentBatch = await currentBatch.getContinuation();
-            currentPage++;
-        }
-
-        if (!currentBatch?.videos) {
-            console.log('No shorts found in batch');
+        if (!channel.has_shorts) {
             return res.json({
                 shorts: [],
-                pagination: {
+                pagination: { 
                     has_more: false,
                     current_page: page,
                     items_per_page: limit,
@@ -506,51 +476,138 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             });
         }
 
-        // Process shorts using FreeTube's approach
-        const processedShorts = currentBatch.videos
-            .slice(0, limit)
-            .map(short => {
-                // Log raw data for debugging
-                console.log('Processing short:', {
-                    id: short.id,
-                    type: short.type,
-                    hasTitle: !!short.title,
-                    hasAccessibility: !!short.accessibility
+        // Get shorts tab
+        const shortsTab = await channel.getShorts();
+        console.log('Got shorts tab, videos count:', shortsTab?.videos?.length);
+
+        let currentBatch = shortsTab;
+        let allShorts = [];
+
+        // Collect all shorts up to the requested page
+        for (let currentPage = 1; currentPage <= page; currentPage++) {
+            if (currentBatch?.videos?.length) {
+                allShorts = allShorts.concat(currentBatch.videos);
+            }
+
+            if (currentPage < page && currentBatch?.has_continuation) {
+                try {
+                    currentBatch = await currentBatch.getContinuation();
+                    console.log(`Got continuation for page ${currentPage + 1}, videos:`, currentBatch?.videos?.length);
+                } catch (error) {
+                    console.error('Error getting continuation:', error);
+                    break;
+                }
+            }
+        }
+
+        // Calculate the slice for the current page
+        const startIndex = (page - 1) * limit;
+        const endIndex = startIndex + limit;
+        const shortsForCurrentPage = allShorts.slice(startIndex, endIndex);
+
+        console.log(`Processing ${shortsForCurrentPage.length} shorts for page ${page}`);
+
+        // Process shorts
+        const processedShorts = [];
+        for (const short of shortsForCurrentPage) {
+            try {
+                // Get video ID from on_tap_endpoint
+                const videoId = short.on_tap_endpoint?.payload?.videoId;
+                if (!videoId) {
+                    console.warn('Could not extract video ID from short');
+                    continue;
+                }
+
+                console.log('Processing short:', videoId);
+
+                // Fetch both shorts and regular info
+                let shortInfo;
+                let regularInfo;
+
+                try {
+                    shortInfo = await yt.getShortsVideoInfo(videoId);
+                } catch (error) {
+                    console.warn('Failed to get shorts info:', error);
+                }
+
+                try {
+                    regularInfo = await yt.getInfo(videoId);
+                    console.log('Got regular info for short:', videoId);
+                } catch (error) {
+                    console.warn('Failed to get regular info:', error);
+                }
+
+                // Combine the info objects
+                const combinedInfo = {
+                    ...shortInfo,
+                    regularInfo: regularInfo,
+                    raw: shortInfo || regularInfo,
+                    primary_info: regularInfo?.primary_info || shortInfo?.primary_info
+                };
+
+                // Get exact view count
+                let viewCount = '';
+                if (regularInfo?.primary_info?.view_count?.view_count?.text) {
+                    // Use exact view count from view_count.text (e.g., "245,906 views")
+                    viewCount = regularInfo.primary_info.view_count.view_count.text.replace(/[^0-9]/g, '');
+                } else if (regularInfo?.primary_info?.view_count?.original_view_count) {
+                    // Try original_view_count as backup
+                    viewCount = regularInfo.primary_info.view_count.original_view_count;
+                } else if (regularInfo?.basic_info?.view_count) {
+                    // Fallback to basic_info view count
+                    viewCount = regularInfo.basic_info.view_count.toString();
+                } else if (short.overlay_metadata?.secondary_text?.text) {
+                    // Fallback to overlay metadata
+                    viewCount = short.overlay_metadata.secondary_text.text.replace(/[^0-9.KMB]/gi, '');
+                } else if (short.accessibility_text) {
+                    // Last resort: try to extract from accessibility text
+                    const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i);
+                    viewCount = viewMatch ? viewMatch[1] : '0';
+                }
+
+                console.log('Extracted view count:', {
+                    raw: regularInfo?.primary_info?.view_count,
+                    extracted: viewCount
                 });
 
-                return {
-                    video_id: short.id || short.video_id,
-                    title: short.title?.text || 
-                           short.accessibility?.label || 
-                           short.accessibility_text?.split(' - ')?.[0] || '',
-                    description: short.description_snippet?.text || '',
+                // Extract data directly from the combined info
+                const shortData = {
+                    video_id: videoId,
+                    title: short.overlay_metadata?.primary_text?.text || 
+                           short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
+                    description: combinedInfo.basic_info?.description || '',
                     thumbnail_url: short.thumbnail?.[0]?.url || 
-                                 `https://i.ytimg.com/vi/${short.id || short.video_id}/maxresdefault.jpg`,
-                    views: short.view_count?.text?.replace(/[^0-9.KMB]/gi, '') || 
-                          short.short_view_count?.text?.replace(/[^0-9.KMB]/gi, '') || 
-                          '0',
-                    duration: short.duration?.text || 
-                             short.accessibility_label?.match(/(\d+:\d+)/)?.[1] || '',
-                    channel_id: channel.metadata?.external_id,
-                    channel_title: channel.metadata?.title,
-                    is_short: true,
-                    // FreeTube notes that shorts tab doesn't include publish dates
-                    published_at: null
+                                 `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                    published_at: regularInfo?.primary_info?.published?.text ? 
+                                 new Date(regularInfo.primary_info.published.text).toISOString() : null,
+                    views: viewCount,
+                    channel_id: channel.metadata?.external_id || '',
+                    channel_title: channel.metadata?.title || '',
+                    duration: combinedInfo.basic_info?.duration?.text || '',
+                    is_short: true
                 };
-            })
-            .filter(short => short.video_id);
 
-        console.log(`Processed ${processedShorts.length} shorts`);
+                processedShorts.push(shortData);
+                console.log('Successfully processed short:', videoId, 'views:', viewCount);
 
-        res.json({
+            } catch (error) {
+                console.error('Error processing short:', error);
+                continue;
+            }
+        }
+
+        const response = {
             shorts: processedShorts,
             pagination: {
-                has_more: currentBatch.has_continuation,
+                has_more: currentBatch?.has_continuation || false,
                 current_page: page,
                 items_per_page: limit,
                 total_items: processedShorts.length
             }
-        });
+        };
+
+        console.log(`Returning ${processedShorts.length} shorts`);
+        res.json(response);
 
     } catch (error) {
         console.error('Channel shorts error:', error);
