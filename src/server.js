@@ -13,67 +13,11 @@ app.use(express.json());
 let yt = null;
 let ytInitialized = false;
 
-// Add these utility functions at the top of the file
-const pLimit = (concurrency) => {
-    const queue = [];
-    let activeCount = 0;
-
-    const next = () => {
-        activeCount--;
-        if (queue.length > 0) {
-            queue.shift()();
-        }
-    };
-
-    return (fn) => {
-        return new Promise((resolve, reject) => {
-            const run = async () => {
-                activeCount++;
-                try {
-                    const result = await fn();
-                    resolve(result);
-                } catch (err) {
-                    reject(err);
-                }
-                next();
-            };
-
-            if (activeCount < concurrency) {
-                run();
-            } else {
-                queue.push(run);
-            }
-        });
-    };
-};
-
-// Add retry logic
-const withRetry = async (fn, retries = 3, delay = 1000) => {
-    let lastError;
-    
-    for (let i = 0; i < retries; i++) {
-        try {
-            return await fn();
-        } catch (error) {
-            lastError = error;
-            if (i < retries - 1) {
-                await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
-            }
-        }
-    }
-    throw lastError;
-};
-
 async function initializeYouTube() {
     try {
         yt = await Innertube.create({
             cache: false,
-            generate_session_locally: true,
-            fetch: {
-                timeout: 30000, // 30 second timeout
-                maxRetries: 3,
-                retryDelay: 1000
-            }
+            generate_session_locally: true
         });
         ytInitialized = true;
         console.log('YouTube client initialized successfully');
@@ -327,23 +271,23 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         
         console.log(`Fetching ${type} for channel:`, req.params.channelId, `(page ${page})`);
         const channel = await yt.getChannel(req.params.channelId);
-
+        
         // Get videos/shorts tab
         const videosTab = type === 'shorts' ? 
             await channel.getShorts() : 
             await channel.getVideos();
 
         let currentBatch = videosTab;
-        let currentPage = 1;
+                let currentPage = 1;
 
-        // Skip to requested page
-        while (currentPage < page && currentBatch?.has_continuation) {
+                // Skip to requested page
+                while (currentPage < page && currentBatch?.has_continuation) {
             currentBatch = await currentBatch.getContinuation();
-            currentPage++;
-        }
+                    currentPage++;
+                }
 
         // Process current page videos in parallel
-        if (currentBatch?.videos) {
+                if (currentBatch?.videos) {
             const processPromises = currentBatch.videos
                 .slice(0, limit)
                 .map(async (video) => {
@@ -386,13 +330,13 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
             const videos = (await Promise.all(processPromises)).filter(v => v !== null);
 
             return res.json({
-                videos,
-                pagination: {
+            videos,
+            pagination: {
                     has_more: currentBatch.has_continuation,
-                    current_page: page,
-                    items_per_page: limit,
-                    total_items: videos.length
-                }
+                current_page: page,
+                items_per_page: limit,
+                total_items: videos.length
+            }
             });
         }
 
@@ -502,7 +446,7 @@ app.get('/api/shorts/:videoId', async (req, res) => {
     }
 });
 
-// Update the channel shorts endpoint to be more efficient
+// Update the channel shorts endpoint
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -510,99 +454,64 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         
         console.log('Fetching shorts for channel:', req.params.channelId);
         
+        // Get channel
         const channel = await yt.getChannel(req.params.channelId);
         
         if (!channel.has_shorts) {
             return res.json({
                 shorts: [],
-                pagination: { has_more: false }
-            });
-        }
-
-        const shortsTab = await channel.getShorts();
-        let currentBatch = shortsTab;
-        let currentPage = 1;
-
-        while (currentPage < page && currentBatch?.has_continuation) {
-            currentBatch = await withRetry(() => currentBatch.getContinuation());
-            currentPage++;
-        }
-
-        if (currentBatch?.videos) {
-            // Create a rate limiter that allows 5 concurrent requests
-            const limit = pLimit(5);
-
-            const processPromises = currentBatch.videos
-                .slice(0, limit)
-                .map(short => limit(async () => {
-                    try {
-                        const videoId = short.on_tap_endpoint?.payload?.videoId || 
-                                      short.id || 
-                                      short.videoId;
-                                      
-                        if (!videoId) {
-                            console.warn('Could not extract video ID from short');
-                            return null;
-                        }
-
-                        const shortData = {
-                            video_id: videoId,
-                            title: short.overlay_metadata?.primary_text?.text || 
-                                   short.title?.text ||
-                                   short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
-                            description: short.description_snippet?.text || '',
-                            thumbnail_url: short.thumbnail?.[0]?.url || 
-                                         `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                            views: extractViews(short),
-                            published_at: parseYouTubeDate(
-                                short.published?.text || 
-                                short.overlay_metadata?.published_time?.text
-                            ),
-                            channel_id: channel.metadata?.external_id || '',
-                            channel_title: channel.metadata?.title || '',
-                            duration: short.duration?.text || '',
-                            is_short: true
-                        };
-
-                        // Only fetch additional info if critical data is missing
-                        if (!shortData.title || !shortData.published_at || !shortData.views) {
-                            try {
-                                const shortInfo = await withRetry(() => 
-                                    yt.getShortsVideoInfo(videoId), 3, 2000);
-                                
-                                shortData.title = shortData.title || shortInfo.basic_info?.title;
-                                shortData.description = shortData.description || shortInfo.basic_info?.description;
-                                shortData.published_at = shortData.published_at || 
-                                    parseYouTubeDate(shortInfo.basic_info?.publish_date);
-                                shortData.views = shortData.views || shortInfo.basic_info?.view_count?.toString() || '0';
-                            } catch (error) {
-                                console.warn(`Failed to get additional info for short ${videoId}:`, error);
-                            }
-                        }
-
-                        return shortData;
-                    } catch (error) {
-                        console.error(`Error processing short:`, error);
-                        return null;
-                    }
-                }));
-
-            const shorts = (await Promise.all(processPromises)).filter(v => v !== null);
-
-            return res.json({
-                shorts,
-                pagination: {
-                    has_more: currentBatch.has_continuation,
+                pagination: { 
+                    has_more: false,
                     current_page: page,
                     items_per_page: limit,
-                    total_items: shorts.length
+                    total_items: 0
                 }
             });
         }
 
+        // Get shorts tab
+        const shortsTab = await channel.getShorts();
+        let currentBatch = shortsTab;
+        let currentPage = 1;
+
+        // Skip to requested page
+        while (currentPage < page && currentBatch?.has_continuation) {
+            currentBatch = await currentBatch.getContinuation();
+            currentPage++;
+        }
+
+        // Process current page shorts
+        const shorts = currentBatch?.videos?.slice(0, limit)?.map(short => {
+            // Extract video ID from on_tap_endpoint
+            const videoId = short.on_tap_endpoint?.payload?.videoId;
+            if (!videoId) return null;
+
+            // Extract data directly from the short object
+            return {
+                video_id: videoId,
+                title: short.overlay_metadata?.primary_text?.text || 
+                       short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
+                description: short.description_snippet?.text || '',
+                thumbnail_url: short.thumbnail?.[0]?.url || 
+                             `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                published_at: short.published?.text ? 
+                             parseYouTubeDate(short.published.text) : null,
+                views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
+                channel_id: channel.metadata?.external_id || '',
+                channel_title: channel.metadata?.title || '',
+                duration: short.duration?.text || '',
+                is_short: true
+            };
+        }).filter(Boolean);
+
         res.json({
-            shorts: [],
-            pagination: { has_more: false }
+            shorts,
+            pagination: {
+                has_more: currentBatch?.has_continuation || false,
+                current_page: page,
+                items_per_page: limit,
+                total_items: shorts.length
+            }
         });
 
     } catch (error) {
