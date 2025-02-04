@@ -13,11 +13,67 @@ app.use(express.json());
 let yt = null;
 let ytInitialized = false;
 
+// Add these utility functions at the top of the file
+const pLimit = (concurrency) => {
+    const queue = [];
+    let activeCount = 0;
+
+    const next = () => {
+        activeCount--;
+        if (queue.length > 0) {
+            queue.shift()();
+        }
+    };
+
+    return (fn) => {
+        return new Promise((resolve, reject) => {
+            const run = async () => {
+                activeCount++;
+                try {
+                    const result = await fn();
+                    resolve(result);
+                } catch (err) {
+                    reject(err);
+                }
+                next();
+            };
+
+            if (activeCount < concurrency) {
+                run();
+            } else {
+                queue.push(run);
+            }
+        });
+    };
+};
+
+// Add retry logic
+const withRetry = async (fn, retries = 3, delay = 1000) => {
+    let lastError;
+    
+    for (let i = 0; i < retries; i++) {
+        try {
+            return await fn();
+        } catch (error) {
+            lastError = error;
+            if (i < retries - 1) {
+                await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
+            }
+        }
+    }
+    throw lastError;
+};
+
 async function initializeYouTube() {
     try {
         yt = await Innertube.create({
             cache: false,
-            generate_session_locally: true
+            generate_session_locally: true,
+            fetch: {
+                timeout: 30000, // 30 second timeout
+                maxRetries: 3,
+                retryDelay: 1000
+            }
         });
         ytInitialized = true;
         console.log('YouTube client initialized successfully');
@@ -459,33 +515,27 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         if (!channel.has_shorts) {
             return res.json({
                 shorts: [],
-                pagination: { 
-                    has_more: false,
-                    current_page: page,
-                    items_per_page: limit,
-                    total_items: 0
-                }
+                pagination: { has_more: false }
             });
         }
 
-        // Get shorts tab
         const shortsTab = await channel.getShorts();
         let currentBatch = shortsTab;
         let currentPage = 1;
 
-        // Skip to requested page
         while (currentPage < page && currentBatch?.has_continuation) {
-            currentBatch = await currentBatch.getContinuation();
+            currentBatch = await withRetry(() => currentBatch.getContinuation());
             currentPage++;
         }
 
-        // Process current page shorts in parallel
         if (currentBatch?.videos) {
+            // Create a rate limiter that allows 5 concurrent requests
+            const limit = pLimit(5);
+
             const processPromises = currentBatch.videos
                 .slice(0, limit)
-                .map(async (short) => {
+                .map(short => limit(async () => {
                     try {
-                        // Extract video ID
                         const videoId = short.on_tap_endpoint?.payload?.videoId || 
                                       short.id || 
                                       short.videoId;
@@ -495,7 +545,6 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                             return null;
                         }
 
-                        // Extract data directly from the shorts tab data when possible
                         const shortData = {
                             video_id: videoId,
                             title: short.overlay_metadata?.primary_text?.text || 
@@ -518,7 +567,9 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                         // Only fetch additional info if critical data is missing
                         if (!shortData.title || !shortData.published_at || !shortData.views) {
                             try {
-                                const shortInfo = await yt.getShortsVideoInfo(videoId);
+                                const shortInfo = await withRetry(() => 
+                                    yt.getShortsVideoInfo(videoId), 3, 2000);
+                                
                                 shortData.title = shortData.title || shortInfo.basic_info?.title;
                                 shortData.description = shortData.description || shortInfo.basic_info?.description;
                                 shortData.published_at = shortData.published_at || 
@@ -534,7 +585,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                         console.error(`Error processing short:`, error);
                         return null;
                     }
-                });
+                }));
 
             const shorts = (await Promise.all(processPromises)).filter(v => v !== null);
 
