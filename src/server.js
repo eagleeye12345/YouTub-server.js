@@ -446,53 +446,75 @@ app.get('/api/shorts/:videoId', async (req, res) => {
     }
 });
 
-// Update the channel shorts endpoint
+// Update the channel shorts endpoint to be more efficient
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 30;
         
-        // Get channel
+        console.log('Fetching shorts for channel:', req.params.channelId);
+        
         const channel = await yt.getChannel(req.params.channelId);
-        const currentBatch = await channel.getShorts({ limit, page });
+        const shortsTab = await channel.getShorts();
+        
+        let currentBatch = shortsTab;
+        let currentPage = 1;
 
-        // Process current page shorts
-        const shorts = currentBatch?.videos?.slice(0, limit)?.map(short => {
-            const videoId = short.on_tap_endpoint?.payload?.videoId;
-            if (!videoId) return null;
+        // Skip to requested page
+        while (currentPage < page && currentBatch?.has_continuation) {
+            currentBatch = await currentBatch.getContinuation();
+            currentPage++;
+        }
 
-            // Extract publish date using similar approach to FreeTube
-            const publishedAt = short.publishedTimeText?.text || // Primary source
-                              short.published?.text || // Fallback 1
-                              short.overlayTimeStatus?.text || // Fallback 2
-                              short.badges?.[0]?.metadata?.publishedTime || // Fallback 3
-                              null;
+        if (!currentBatch?.videos) {
+            return res.json({
+                shorts: [],
+                pagination: {
+                    has_more: false,
+                    current_page: page,
+                    items_per_page: limit,
+                    total_items: 0
+                }
+            });
+        }
 
-            return {
-                video_id: videoId,
-                title: short.overlay_metadata?.primary_text?.text || 
-                       short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
-                description: short.description_snippet?.text || '',
-                thumbnail_url: short.thumbnail?.[0]?.url || 
-                             `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                published_at: publishedAt,
-                views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
-                channel_id: channel.metadata?.external_id || '',
-                channel_title: channel.metadata?.title || '',
-                duration: short.duration?.text || '',
-                is_short: true
-            };
-        }).filter(Boolean);
+        // Process current page shorts without additional API calls
+        const processedShorts = currentBatch.videos
+            .slice(0, limit)
+            .map(short => {
+                // Extract data directly from the shorts tab response
+                const shortData = {
+                    video_id: short.id || short.videoId,
+                    title: short.title?.text || 
+                           short.accessibility_text?.split(' - ')[0] || '',
+                    description: short.description_snippet?.text || '',
+                    thumbnail_url: short.thumbnail?.[0]?.url || 
+                                 `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                    published_at: short.published?.text ? 
+                                 parseYouTubeDate(short.published.text) : null,
+                    views: short.view_count?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
+                    channel_id: channel.metadata?.external_id || '',
+                    channel_title: channel.metadata?.title || '',
+                    duration: short.duration?.text || '',
+                    is_short: true
+                };
 
-        res.json({
-            shorts,
+                return shortData;
+            })
+            .filter(short => short.video_id); // Filter out any invalid shorts
+
+        const response = {
+            shorts: processedShorts,
             pagination: {
-                has_more: currentBatch?.has_continuation || false,
+                has_more: currentBatch.has_continuation,
                 current_page: page,
                 items_per_page: limit,
-                total_items: shorts.length
+                total_items: processedShorts.length
             }
-        });
+        };
+
+        console.log(`Returning ${processedShorts.length} shorts`);
+        res.json(response);
 
     } catch (error) {
         console.error('Channel shorts error:', error);
