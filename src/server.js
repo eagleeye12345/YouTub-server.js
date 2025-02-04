@@ -455,22 +455,48 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         console.log('Fetching shorts for channel:', req.params.channelId);
         
         const channel = await yt.getChannel(req.params.channelId);
+        console.log('Got channel, metadata:', {
+            id: channel.metadata?.external_id,
+            has_shorts: channel.has_shorts,
+            available_tabs: channel.available_tabs
+        });
+
         const shortsTab = await channel.getShorts();
+        console.log('Got shorts tab:', {
+            hasVideos: !!shortsTab?.videos,
+            videoCount: shortsTab?.videos?.length,
+            hasContinuation: shortsTab?.has_continuation
+        });
         
         let currentBatch = shortsTab;
         let currentPage = 1;
 
         // Skip to requested page
         while (currentPage < page && currentBatch?.has_continuation) {
+            console.log(`Getting continuation for page ${currentPage + 1}`);
             currentBatch = await currentBatch.getContinuation();
             currentPage++;
         }
 
-        if (!currentBatch?.videos) {
+        // Debug the current batch structure
+        console.log('Current batch structure:', {
+            hasVideos: !!currentBatch?.videos,
+            videoCount: currentBatch?.videos?.length,
+            hasContinuation: currentBatch?.has_continuation,
+            firstVideo: currentBatch?.videos?.[0] ? {
+                id: currentBatch.videos[0].id,
+                videoId: currentBatch.videos[0].videoId,
+                hasTitle: !!currentBatch.videos[0].title,
+                hasPublished: !!currentBatch.videos[0].published
+            } : null
+        });
+
+        if (!currentBatch?.videos?.length) {
+            console.log('No videos found in current batch');
             return res.json({
                 shorts: [],
                 pagination: {
-                    has_more: false,
+                    has_more: currentBatch?.has_continuation || false,
                     current_page: page,
                     items_per_page: limit,
                     total_items: 0
@@ -482,6 +508,17 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         const processedShorts = currentBatch.videos
             .slice(0, limit)
             .map(short => {
+                // Log the structure of each short
+                console.log('Processing short:', {
+                    id: short.id,
+                    videoId: short.videoId,
+                    hasTitle: !!short.title,
+                    titleText: short.title?.text,
+                    hasAccessibilityText: !!short.accessibility_text,
+                    hasPublished: !!short.published,
+                    publishedText: short.published?.text
+                });
+
                 // Extract data directly from the shorts tab response
                 const shortData = {
                     video_id: short.id || short.videoId,
@@ -489,10 +526,12 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                            short.accessibility_text?.split(' - ')[0] || '',
                     description: short.description_snippet?.text || '',
                     thumbnail_url: short.thumbnail?.[0]?.url || 
-                                 `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                                 `https://i.ytimg.com/vi/${short.id || short.videoId}/hqdefault.jpg`,
                     published_at: short.published?.text ? 
                                  parseYouTubeDate(short.published.text) : null,
-                    views: short.view_count?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
+                    views: short.view_count?.text?.replace(/[^0-9.KMB]/gi, '') || 
+                          short.short_view_count?.text?.replace(/[^0-9.KMB]/gi, '') || 
+                          short.view_count_text?.replace(/[^0-9.KMB]/gi, '') || '0',
                     channel_id: channel.metadata?.external_id || '',
                     channel_title: channel.metadata?.title || '',
                     duration: short.duration?.text || '',
@@ -502,6 +541,8 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 return shortData;
             })
             .filter(short => short.video_id); // Filter out any invalid shorts
+
+        console.log(`Processed ${processedShorts.length} valid shorts`);
 
         const response = {
             shorts: processedShorts,
@@ -513,7 +554,6 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             }
         };
 
-        console.log(`Returning ${processedShorts.length} shorts`);
         res.json(response);
 
     } catch (error) {
