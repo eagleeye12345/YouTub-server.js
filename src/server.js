@@ -486,6 +486,14 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             const videoId = short.on_tap_endpoint?.payload?.videoId;
             if (!videoId) return null;
 
+            // Debug publish date paths
+            console.log('Short publish date paths:', {
+                videoId,
+                published: short.published,
+                badges: short.badges,
+                publishedText: short?.published?.text,
+            });
+
             // Extract data directly from the short object
             return {
                 video_id: videoId,
@@ -494,8 +502,9 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 description: short.description_snippet?.text || '',
                 thumbnail_url: short.thumbnail?.[0]?.url || 
                              `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                published_at: short.published?.text ? 
-                             new Date(short.published.text).toISOString() : null,
+                published_at: short?.badges?.[0]?.published?.text || 
+                             short?.published?.text || 
+                             null,
                 views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
                 channel_id: channel.metadata?.external_id || '',
                 channel_title: channel.metadata?.title || '',
