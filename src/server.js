@@ -392,11 +392,13 @@ app.get('/api/shorts/:videoId', async (req, res) => {
     try {
         // Get shorts info first
         const shortInfo = await yt.getShortsVideoInfo(req.params.videoId);
-        console.log('Got shorts info:', JSON.stringify(shortInfo?.primary_info, null, 2));
 
         // Extract published date from shortInfo first
         const publishedDate = shortInfo?.primary_info?.published?.text || 
                             shortInfo?.basic_info?.publish_date;
+
+        // Extract view count from shortInfo
+        const viewCount = extractViews(shortInfo) || '0';
 
         const simplifiedInfo = {
             video_id: shortInfo.basic_info?.id || req.params.videoId,
@@ -405,7 +407,7 @@ app.get('/api/shorts/:videoId', async (req, res) => {
             description: shortInfo.basic_info?.description || '',
             thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url ||
                          `https://i.ytimg.com/vi/${req.params.videoId}/hqdefault.jpg`,
-            views: extractViews(shortInfo) || '0',
+            views: viewCount,
             published_at: publishedDate ? parseYouTubeDate(publishedDate) : null,
             channel_id: shortInfo.basic_info?.channel?.id,
             channel_title: shortInfo.basic_info?.channel?.name,
@@ -419,7 +421,6 @@ app.get('/api/shorts/:videoId', async (req, res) => {
         if (!simplifiedInfo.published_at || !simplifiedInfo.title) {
             try {
                 const regularInfo = await yt.getInfo(req.params.videoId);
-                console.log('Got regular info:', JSON.stringify(regularInfo?.primary_info, null, 2));
                 
                 // Fill in missing data
                 if (!simplifiedInfo.published_at && regularInfo?.primary_info?.published?.text) {
@@ -429,14 +430,13 @@ app.get('/api/shorts/:videoId', async (req, res) => {
                     simplifiedInfo.title = regularInfo.basic_info.title;
                 }
             } catch (error) {
-                console.warn('Failed to get regular info:', error);
+                console.warn(`Failed to get regular info for short ${req.params.videoId}:`, error.message);
             }
         }
 
-        console.log('Final simplified info:', JSON.stringify(simplifiedInfo, null, 2));
         res.json(simplifiedInfo);
     } catch (error) {
-        console.error('Shorts error:', error);
+        console.error(`Error processing short ${req.params.videoId}:`, error.message);
         res.status(500).json({ error: error.message });
     }
 });
