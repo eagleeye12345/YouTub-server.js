@@ -390,53 +390,48 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
 // Update the shorts processing logic in the /api/shorts/:videoId endpoint
 app.get('/api/shorts/:videoId', async (req, res) => {
     try {
-        let shortInfo;
-        let regularInfo;
-        
-        try {
-            shortInfo = await yt.getShortsVideoInfo(req.params.videoId);
-            console.log('Got shorts info:', JSON.stringify(shortInfo?.primary_info, null, 2));
-        } catch (error) {
-            console.warn('Failed to get shorts info:', error);
-        }
+        // Get shorts info first
+        const shortInfo = await yt.getShortsVideoInfo(req.params.videoId);
+        console.log('Got shorts info:', JSON.stringify(shortInfo?.primary_info, null, 2));
 
-        try {
-            regularInfo = await yt.getInfo(req.params.videoId);
-            console.log('Got regular info:', JSON.stringify(regularInfo?.primary_info, null, 2));
-        } catch (error) {
-            console.warn('Failed to get regular info:', error);
-        }
-
-        if (!shortInfo && !regularInfo) {
-            return res.status(404).json({ error: 'Short not found or not available' });
-        }
-
-        // Combine the info objects
-        const combinedInfo = {
-            ...shortInfo,
-            regularInfo: regularInfo,
-            raw: shortInfo || regularInfo,
-            primary_info: regularInfo?.primary_info || shortInfo?.primary_info
-        };
-
-        console.log('Combined info primary_info:', JSON.stringify(combinedInfo.primary_info, null, 2));
+        // Extract published date from shortInfo first
+        const publishedDate = shortInfo?.primary_info?.published?.text || 
+                            shortInfo?.basic_info?.publish_date;
 
         const simplifiedInfo = {
-            video_id: combinedInfo.basic_info?.id || req.params.videoId,
-            title: combinedInfo.primary_info?.title?.text || 
-                   combinedInfo.basic_info?.title || '',
-            description: combinedInfo.basic_info?.description || '',
-            thumbnail_url: combinedInfo.basic_info?.thumbnail?.[0]?.url ||
+            video_id: shortInfo.basic_info?.id || req.params.videoId,
+            title: shortInfo.primary_info?.title?.text || 
+                   shortInfo.basic_info?.title || '',
+            description: shortInfo.basic_info?.description || '',
+            thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url ||
                          `https://i.ytimg.com/vi/${req.params.videoId}/hqdefault.jpg`,
-            views: extractViews(combinedInfo) || '0',
-            published_at: extractPublishedDate(combinedInfo),
-            channel_id: combinedInfo.basic_info?.channel?.id,
-            channel_title: combinedInfo.basic_info?.channel?.name,
-            channel_thumbnail: combinedInfo.basic_info?.channel?.thumbnails?.[0]?.url,
-            duration: combinedInfo.basic_info?.duration?.text || '',
+            views: extractViews(shortInfo) || '0',
+            published_at: publishedDate ? parseYouTubeDate(publishedDate) : null,
+            channel_id: shortInfo.basic_info?.channel?.id,
+            channel_title: shortInfo.basic_info?.channel?.name,
+            channel_thumbnail: shortInfo.basic_info?.channel?.thumbnails?.[0]?.url,
+            duration: shortInfo.basic_info?.duration?.text || '',
             is_short: true,
-            playability_status: combinedInfo.playability_status
+            playability_status: shortInfo.playability_status
         };
+
+        // Only fetch regular info if we're missing critical data
+        if (!simplifiedInfo.published_at || !simplifiedInfo.title) {
+            try {
+                const regularInfo = await yt.getInfo(req.params.videoId);
+                console.log('Got regular info:', JSON.stringify(regularInfo?.primary_info, null, 2));
+                
+                // Fill in missing data
+                if (!simplifiedInfo.published_at && regularInfo?.primary_info?.published?.text) {
+                    simplifiedInfo.published_at = parseYouTubeDate(regularInfo.primary_info.published.text);
+                }
+                if (!simplifiedInfo.title && regularInfo?.basic_info?.title) {
+                    simplifiedInfo.title = regularInfo.basic_info.title;
+                }
+            } catch (error) {
+                console.warn('Failed to get regular info:', error);
+            }
+        }
 
         console.log('Final simplified info:', JSON.stringify(simplifiedInfo, null, 2));
         res.json(simplifiedInfo);
