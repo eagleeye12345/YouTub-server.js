@@ -480,21 +480,38 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             currentPage++;
         }
 
-        // Process current page shorts
-        const shorts = currentBatch?.videos?.slice(0, limit)?.map(short => {
-            // Extract video ID from on_tap_endpoint
+        // First collect all video IDs
+        const shortsData = currentBatch?.videos?.slice(0, limit)?.map(short => {
             const videoId = short.on_tap_endpoint?.payload?.videoId;
             if (!videoId) return null;
-
-            // Debug publish date paths
-            console.log('Short publish date paths:', {
+            return {
                 videoId,
-                published: short.published,
-                badges: short.badges,
-                publishedText: short?.published?.text,
-            });
+                shortData: short
+            };
+        }).filter(Boolean);
 
-            // Extract data directly from the short object
+        // Fetch all video info in parallel
+        const videoInfoPromises = shortsData.map(async ({ videoId }) => {
+            try {
+                const info = await yt.getInfo(videoId);
+                return {
+                    videoId,
+                    publishDate: info.basic_info?.publish_date
+                };
+            } catch (error) {
+                console.warn(`Failed to get info for video ${videoId}:`, error.message);
+                return { videoId, publishDate: null };
+            }
+        });
+
+        // Wait for all video info requests
+        const videoInfoResults = await Promise.all(videoInfoPromises);
+        const publishDates = Object.fromEntries(
+            videoInfoResults.map(({ videoId, publishDate }) => [videoId, publishDate])
+        );
+
+        // Process shorts with publish dates
+        const shorts = shortsData.map(({ videoId, shortData: short }) => {
             return {
                 video_id: videoId,
                 title: short.overlay_metadata?.primary_text?.text || 
@@ -502,16 +519,14 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 description: short.description_snippet?.text || '',
                 thumbnail_url: short.thumbnail?.[0]?.url || 
                              `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                published_at: short?.badges?.[0]?.published?.text || 
-                             short?.published?.text || 
-                             null,
+                published_at: publishDates[videoId],
                 views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
                 channel_id: channel.metadata?.external_id || '',
                 channel_title: channel.metadata?.title || '',
                 duration: short.duration?.text || '',
                 is_short: true
             };
-        }).filter(Boolean);
+        });
 
         res.json({
             shorts,
