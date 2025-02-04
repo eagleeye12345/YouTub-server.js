@@ -481,40 +481,28 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         }
 
         // Process current page shorts
-        const shortsPromises = currentBatch?.videos?.slice(0, limit)?.map(async short => {
+        const shorts = currentBatch?.videos?.slice(0, limit)?.map(short => {
             // Extract video ID from on_tap_endpoint
             const videoId = short.on_tap_endpoint?.payload?.videoId;
             if (!videoId) return null;
 
-            try {
-                // Fetch basic info for publish date
-                const regularInfo = await yt.getInfo(videoId);
-                const publishedAt = regularInfo?.primary_info?.published?.text ? 
-                    new Date(regularInfo.primary_info.published.text).toISOString() : null;
-
-                // Extract data directly from the short object
-                return {
-                    video_id: videoId,
-                    title: short.overlay_metadata?.primary_text?.text || 
-                           short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
-                    description: short.description_snippet?.text || '',
-                    thumbnail_url: short.thumbnail?.[0]?.url || 
-                                 `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                    published_at: publishedAt,
-                    views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
-                    channel_id: channel.metadata?.external_id || '',
-                    channel_title: channel.metadata?.title || '',
-                    duration: short.duration?.text || '',
-                    is_short: true
-                };
-            } catch (error) {
-                console.warn(`Failed to get info for short ${videoId}:`, error.message);
-                return null;
-            }
-        });
-
-        // Wait for all shorts to be processed
-        const shorts = (await Promise.all(shortsPromises)).filter(Boolean);
+            // Extract data directly from the short object
+            return {
+                video_id: videoId,
+                title: short.overlay_metadata?.primary_text?.text || 
+                       short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
+                description: short.description_snippet?.text || '',
+                thumbnail_url: short.thumbnail?.[0]?.url || 
+                             `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                published_at: short.published?.text ? 
+                             new Date(short.published.text).toISOString() : null,
+                views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
+                channel_id: channel.metadata?.external_id || '',
+                channel_title: channel.metadata?.title || '',
+                duration: short.duration?.text || '',
+                is_short: true
+            };
+        }).filter(Boolean);
 
         res.json({
             shorts,
