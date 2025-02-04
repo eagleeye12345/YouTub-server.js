@@ -227,32 +227,25 @@ function extractViews(short) {
     try {
         // First try accessibility text as it's most reliable for shorts
         if (short.accessibility_text) {
-            const viewMatch = short.accessibility_text.match(/([0-9,.]+[KMB]?)\s*views?/i);
+            const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i);
             if (viewMatch) {
-                console.log('Found views in accessibility text:', viewMatch[1]);
-                return viewMatch[1].replace(/,/g, '');
+                return viewMatch[1];
             }
         }
 
         // Try overlay stats
         if (short.overlay_stats?.[0]?.text?.simpleText) {
-            const viewText = short.overlay_stats[0].text.simpleText;
-            console.log('Found views in overlay stats:', viewText);
-            return viewText.replace(/[^0-9.KMB]/gi, '');
+            return short.overlay_stats[0].text.simpleText.replace(/[^0-9.KMB]/gi, '');
         }
 
         // Try engagement panels
         if (short.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
-            const viewText = short.engagement_panels[0].engagementPanelSectionListRenderer.content.viewCount.videoViewCountRenderer.viewCount.simpleText;
-            console.log('Found views in engagement panel:', viewText);
-            return viewText.replace(/[^0-9.KMB]/gi, '');
+            return short.engagement_panels[0].engagementPanelSectionListRenderer.content.viewCount.videoViewCountRenderer.viewCount.simpleText.replace(/[^0-9.KMB]/gi, '');
         }
 
         // Try video primary info
         if (short.primary_info?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
-            const viewText = short.primary_info.viewCount.videoViewCountRenderer.viewCount.simpleText;
-            console.log('Found views in primary info:', viewText);
-            return viewText.replace(/[^0-9.KMB]/gi, '');
+            return short.primary_info.viewCount.videoViewCountRenderer.viewCount.simpleText.replace(/[^0-9.KMB]/gi, '');
         }
 
         return '0';
