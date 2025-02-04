@@ -454,49 +454,51 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         
         console.log('Fetching shorts for channel:', req.params.channelId);
         
+        // Get channel instance like FreeTube does
         const channel = await yt.getChannel(req.params.channelId);
-        console.log('Got channel, metadata:', {
+        console.log('Got channel:', {
             id: channel.metadata?.external_id,
-            has_shorts: channel.has_shorts,
-            available_tabs: channel.available_tabs
+            title: channel.metadata?.title,
+            hasShorts: channel.has_shorts
         });
 
+        // Get shorts tab using the same method as FreeTube
         const shortsTab = await channel.getShorts();
         console.log('Got shorts tab:', {
+            hasContent: !!shortsTab?.content,
             hasVideos: !!shortsTab?.videos,
             videoCount: shortsTab?.videos?.length,
-            hasContinuation: shortsTab?.has_continuation
+            filterCount: shortsTab?.filters?.length
         });
-        
-        let currentBatch = shortsTab;
-        let currentPage = 1;
 
-        // Skip to requested page
+        // Apply sorting if available (matching FreeTube's implementation)
+        const sortBy = req.query.sortBy || 'newest';
+        let currentTab = shortsTab;
+        
+        if (shortsTab?.filters?.length > 0 && sortBy !== 'newest') {
+            const filterIndex = ['newest', 'popular'].indexOf(sortBy);
+            if (filterIndex >= 0 && filterIndex < shortsTab.filters.length) {
+                console.log(`Applying ${sortBy} filter`);
+                currentTab = await shortsTab.applyFilter(shortsTab.filters[filterIndex]);
+            }
+        }
+
+        // Handle pagination like FreeTube
+        let currentBatch = currentTab;
+        let currentPage = 1;
+        
         while (currentPage < page && currentBatch?.has_continuation) {
             console.log(`Getting continuation for page ${currentPage + 1}`);
             currentBatch = await currentBatch.getContinuation();
             currentPage++;
         }
 
-        // Debug the current batch structure
-        console.log('Current batch structure:', {
-            hasVideos: !!currentBatch?.videos,
-            videoCount: currentBatch?.videos?.length,
-            hasContinuation: currentBatch?.has_continuation,
-            firstVideo: currentBatch?.videos?.[0] ? {
-                id: currentBatch.videos[0].id,
-                videoId: currentBatch.videos[0].videoId,
-                hasTitle: !!currentBatch.videos[0].title,
-                hasPublished: !!currentBatch.videos[0].published
-            } : null
-        });
-
-        if (!currentBatch?.videos?.length) {
-            console.log('No videos found in current batch');
+        if (!currentBatch?.videos) {
+            console.log('No shorts found in batch');
             return res.json({
                 shorts: [],
                 pagination: {
-                    has_more: currentBatch?.has_continuation || false,
+                    has_more: false,
                     current_page: page,
                     items_per_page: limit,
                     total_items: 0
@@ -504,47 +506,43 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             });
         }
 
-        // Process current page shorts without additional API calls
+        // Process shorts using FreeTube's approach
         const processedShorts = currentBatch.videos
             .slice(0, limit)
             .map(short => {
-                // Log the structure of each short
+                // Log raw data for debugging
                 console.log('Processing short:', {
                     id: short.id,
-                    videoId: short.videoId,
+                    type: short.type,
                     hasTitle: !!short.title,
-                    titleText: short.title?.text,
-                    hasAccessibilityText: !!short.accessibility_text,
-                    hasPublished: !!short.published,
-                    publishedText: short.published?.text
+                    hasAccessibility: !!short.accessibility
                 });
 
-                // Extract data directly from the shorts tab response
-                const shortData = {
-                    video_id: short.id || short.videoId,
+                return {
+                    video_id: short.id || short.video_id,
                     title: short.title?.text || 
-                           short.accessibility_text?.split(' - ')[0] || '',
+                           short.accessibility?.label || 
+                           short.accessibility_text?.split(' - ')?.[0] || '',
                     description: short.description_snippet?.text || '',
                     thumbnail_url: short.thumbnail?.[0]?.url || 
-                                 `https://i.ytimg.com/vi/${short.id || short.videoId}/hqdefault.jpg`,
-                    published_at: short.published?.text ? 
-                                 parseYouTubeDate(short.published.text) : null,
+                                 `https://i.ytimg.com/vi/${short.id || short.video_id}/maxresdefault.jpg`,
                     views: short.view_count?.text?.replace(/[^0-9.KMB]/gi, '') || 
                           short.short_view_count?.text?.replace(/[^0-9.KMB]/gi, '') || 
-                          short.view_count_text?.replace(/[^0-9.KMB]/gi, '') || '0',
-                    channel_id: channel.metadata?.external_id || '',
-                    channel_title: channel.metadata?.title || '',
-                    duration: short.duration?.text || '',
-                    is_short: true
+                          '0',
+                    duration: short.duration?.text || 
+                             short.accessibility_label?.match(/(\d+:\d+)/)?.[1] || '',
+                    channel_id: channel.metadata?.external_id,
+                    channel_title: channel.metadata?.title,
+                    is_short: true,
+                    // FreeTube notes that shorts tab doesn't include publish dates
+                    published_at: null
                 };
-
-                return shortData;
             })
-            .filter(short => short.video_id); // Filter out any invalid shorts
+            .filter(short => short.video_id);
 
-        console.log(`Processed ${processedShorts.length} valid shorts`);
+        console.log(`Processed ${processedShorts.length} shorts`);
 
-        const response = {
+        res.json({
             shorts: processedShorts,
             pagination: {
                 has_more: currentBatch.has_continuation,
@@ -552,9 +550,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 items_per_page: limit,
                 total_items: processedShorts.length
             }
-        };
-
-        res.json(response);
+        });
 
     } catch (error) {
         console.error('Channel shorts error:', error);
