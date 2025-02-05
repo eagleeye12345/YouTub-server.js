@@ -175,43 +175,32 @@ function debugLogObject(prefix, obj) {
     console.log(`${prefix}:`, JSON.stringify(obj, null, 2));
 }
 
-// Update the extractPublishedDate function with more paths and debugging
+// Update the extractPublishedDate function to use existing data
 function extractPublishedDate(short) {
     try {
-        console.log('Extracting date from:', JSON.stringify({
-            regularInfo_path: short?.regularInfo?.primary_info?.published?.text,
-            primary_info_path: short?.primary_info?.published?.text,
-            raw_path: short?.raw?.primary_info?.published?.text,
-            relative_date: short?.primary_info?.relative_date?.text
-        }, null, 2));
-
-        // Check regularInfo path first
-        if (short?.regularInfo?.primary_info?.published?.text) {
-            const dateStr = short.regularInfo.primary_info.published.text;
-            console.log('Found date in regularInfo:', dateStr);
-            const parsedDate = new Date(dateStr);
-            if (!isNaN(parsedDate.getTime())) {
-                return parsedDate.toISOString();
-            }
+        // First try the regular info if it exists
+        if (short?.regularInfo?.basic_info?.publish_date) {
+            return short.regularInfo.basic_info.publish_date;
         }
 
-        // Check primary_info path
-        if (short?.primary_info?.published?.text) {
-            const dateStr = short.primary_info.published.text;
-            console.log('Found date in primary_info:', dateStr);
-            const parsedDate = new Date(dateStr);
-            if (!isNaN(parsedDate.getTime())) {
-                return parsedDate.toISOString();
-            }
+        // Then try the shorts info
+        if (short?.basic_info?.publish_date) {
+            return short.basic_info.publish_date;
         }
 
-        // Check raw data path
-        if (short?.raw?.primary_info?.published?.text) {
-            const dateStr = short.raw.primary_info.published.text;
-            console.log('Found date in raw data:', dateStr);
-            const parsedDate = new Date(dateStr);
-            if (!isNaN(parsedDate.getTime())) {
-                return parsedDate.toISOString();
+        // Try various paths in the raw data
+        const datePaths = [
+            short?.primary_info?.published?.text,
+            short?.raw?.primary_info?.published?.text,
+            short?.relative_date?.text
+        ];
+
+        for (const dateStr of datePaths) {
+            if (dateStr) {
+                const parsedDate = parseYouTubeDate(dateStr);
+                if (parsedDate) {
+                    return parsedDate;
+                }
             }
         }
 
@@ -227,25 +216,32 @@ function extractViews(short) {
     try {
         // First try accessibility text as it's most reliable for shorts
         if (short.accessibility_text) {
-            const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i);
+            const viewMatch = short.accessibility_text.match(/([0-9,.]+[KMB]?)\s*views?/i);
             if (viewMatch) {
-                return viewMatch[1];
+                console.log('Found views in accessibility text:', viewMatch[1]);
+                return viewMatch[1].replace(/,/g, '');
             }
         }
 
         // Try overlay stats
         if (short.overlay_stats?.[0]?.text?.simpleText) {
-            return short.overlay_stats[0].text.simpleText.replace(/[^0-9.KMB]/gi, '');
+            const viewText = short.overlay_stats[0].text.simpleText;
+            console.log('Found views in overlay stats:', viewText);
+            return viewText.replace(/[^0-9.KMB]/gi, '');
         }
 
         // Try engagement panels
         if (short.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
-            return short.engagement_panels[0].engagementPanelSectionListRenderer.content.viewCount.videoViewCountRenderer.viewCount.simpleText.replace(/[^0-9.KMB]/gi, '');
+            const viewText = short.engagement_panels[0].engagementPanelSectionListRenderer.content.viewCount.videoViewCountRenderer.viewCount.simpleText;
+            console.log('Found views in engagement panel:', viewText);
+            return viewText.replace(/[^0-9.KMB]/gi, '');
         }
 
         // Try video primary info
         if (short.primary_info?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
-            return short.primary_info.viewCount.videoViewCountRenderer.viewCount.simpleText.replace(/[^0-9.KMB]/gi, '');
+            const viewText = short.primary_info.viewCount.videoViewCountRenderer.viewCount.simpleText;
+            console.log('Found views in primary info:', viewText);
+            return viewText.replace(/[^0-9.KMB]/gi, '');
         }
 
         return '0';
@@ -380,56 +376,59 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
   }
 });
 
-// Update the shorts processing logic in the /api/shorts/:videoId endpoint
+// Update the shorts endpoint to avoid redundant API calls
 app.get('/api/shorts/:videoId', async (req, res) => {
     try {
-        // Get shorts info first
-        const shortInfo = await yt.getShortsVideoInfo(req.params.videoId);
+        // Try getting regular info first as it contains most of the data we need
+        let regularInfo;
+        try {
+            regularInfo = await yt.getInfo(req.params.videoId);
+        } catch (error) {
+            console.warn('Failed to get regular info:', error);
+        }
 
-        // Extract published date from shortInfo first
-        const publishedDate = shortInfo?.primary_info?.published?.text || 
-                            shortInfo?.basic_info?.publish_date;
-
-        // Extract view count from shortInfo
-        const viewCount = extractViews(shortInfo) || '0';
-
-        const simplifiedInfo = {
-            video_id: shortInfo.basic_info?.id || req.params.videoId,
-            title: shortInfo.primary_info?.title?.text || 
-                   shortInfo.basic_info?.title || '',
-            description: shortInfo.basic_info?.description || '',
-            thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url ||
-                         `https://i.ytimg.com/vi/${req.params.videoId}/hqdefault.jpg`,
-            views: viewCount,
-            published_at: publishedDate ? parseYouTubeDate(publishedDate) : null,
-            channel_id: shortInfo.basic_info?.channel?.id,
-            channel_title: shortInfo.basic_info?.channel?.name,
-            channel_thumbnail: shortInfo.basic_info?.channel?.thumbnails?.[0]?.url,
-            duration: shortInfo.basic_info?.duration?.text || '',
-            is_short: true,
-            playability_status: shortInfo.playability_status
-        };
-
-        // Only fetch regular info if we're missing critical data
-        if (!simplifiedInfo.published_at || !simplifiedInfo.title) {
+        // Only get shorts info if regular info is not available or doesn't contain required data
+        let shortInfo;
+        if (!regularInfo || !regularInfo.basic_info?.publish_date) {
             try {
-                const regularInfo = await yt.getInfo(req.params.videoId);
-                
-                // Fill in missing data
-                if (!simplifiedInfo.published_at && regularInfo?.primary_info?.published?.text) {
-                    simplifiedInfo.published_at = parseYouTubeDate(regularInfo.primary_info.published.text);
-                }
-                if (!simplifiedInfo.title && regularInfo?.basic_info?.title) {
-                    simplifiedInfo.title = regularInfo.basic_info.title;
-                }
+                shortInfo = await yt.getShortsVideoInfo(req.params.videoId);
             } catch (error) {
-                console.warn(`Failed to get regular info for short ${req.params.videoId}:`, error.message);
+                console.warn('Failed to get shorts info:', error);
             }
         }
 
+        if (!regularInfo && !shortInfo) {
+            return res.status(404).json({ error: 'Short not found or not available' });
+        }
+
+        // Combine the info objects
+        const combinedInfo = {
+            ...shortInfo,
+            regularInfo: regularInfo,
+            raw: shortInfo || regularInfo,
+            primary_info: regularInfo?.primary_info || shortInfo?.primary_info
+        };
+
+        const simplifiedInfo = {
+            video_id: combinedInfo.basic_info?.id || req.params.videoId,
+            title: combinedInfo.primary_info?.title?.text || 
+                   combinedInfo.basic_info?.title || '',
+            description: combinedInfo.basic_info?.description || '',
+            thumbnail_url: combinedInfo.basic_info?.thumbnail?.[0]?.url ||
+                         `https://i.ytimg.com/vi/${req.params.videoId}/hqdefault.jpg`,
+            views: extractViews(combinedInfo) || '0',
+            published_at: extractPublishedDate(combinedInfo),
+            channel_id: combinedInfo.basic_info?.channel?.id,
+            channel_title: combinedInfo.basic_info?.channel?.name,
+            channel_thumbnail: combinedInfo.basic_info?.channel?.thumbnails?.[0]?.url,
+            duration: combinedInfo.basic_info?.duration?.text || '',
+            is_short: true,
+            playability_status: combinedInfo.playability_status
+        };
+
         res.json(simplifiedInfo);
     } catch (error) {
-        console.error(`Error processing short ${req.params.videoId}:`, error.message);
+        console.error('Shorts error:', error);
         res.status(500).json({ error: error.message });
     }
 });
