@@ -211,14 +211,13 @@ function extractPublishedDate(short) {
     }
 }
 
-// Update extractViews function
+// Update the extractViews function
 function extractViews(short) {
     try {
         // First try accessibility text as it's most reliable for shorts
         if (short.accessibility_text) {
             const viewMatch = short.accessibility_text.match(/([0-9,.]+[KMB]?)\s*views?/i);
             if (viewMatch) {
-                console.log('Found views in accessibility text:', viewMatch[1]);
                 return viewMatch[1].replace(/,/g, '');
             }
         }
@@ -226,21 +225,18 @@ function extractViews(short) {
         // Try overlay stats
         if (short.overlay_stats?.[0]?.text?.simpleText) {
             const viewText = short.overlay_stats[0].text.simpleText;
-            console.log('Found views in overlay stats:', viewText);
             return viewText.replace(/[^0-9.KMB]/gi, '');
         }
 
         // Try engagement panels
         if (short.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
             const viewText = short.engagement_panels[0].engagementPanelSectionListRenderer.content.viewCount.videoViewCountRenderer.viewCount.simpleText;
-            console.log('Found views in engagement panel:', viewText);
             return viewText.replace(/[^0-9.KMB]/gi, '');
         }
 
         // Try video primary info
         if (short.primary_info?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
             const viewText = short.primary_info.viewCount.videoViewCountRenderer.viewCount.simpleText;
-            console.log('Found views in primary info:', viewText);
             return viewText.replace(/[^0-9.KMB]/gi, '');
         }
 
