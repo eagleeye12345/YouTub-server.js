@@ -489,24 +489,37 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             // Get video ID from the short
             const videoId = short.id || short.on_tap_endpoint?.payload?.videoId;
             
-            // Try to get publish date from initial data
             let publishDate = null;
             
             try {
-                // Always fetch the full short info to get accurate publish date
-                const shortInfo = await yt.getShortsVideoInfo(videoId);
+                // Get regular video info instead of shorts info
+                const videoInfo = await yt.getInfo(videoId);
                 
-                // Check regularInfo path first (most reliable)
-                publishDate = shortInfo?.regularInfo?.primary_info?.published?.text;
-                
-                // Fallback paths if regularInfo is not available
-                if (!publishDate) {
-                    publishDate = shortInfo?.primary_info?.published?.text;
-                }
+                // Log the full response for debugging
+                console.log(`Video ${videoId} info:`, JSON.stringify({
+                    basic_info: videoInfo?.basic_info,
+                    primary_info: videoInfo?.primary_info,
+                    regularInfo: videoInfo?.regularInfo
+                }, null, 2));
+
+                // Try multiple paths to get the publish date
+                publishDate = videoInfo?.primary_info?.published?.text ||
+                             videoInfo?.basic_info?.publish_date ||
+                             videoInfo?.regularInfo?.primary_info?.published?.text;
 
                 console.log(`Short ${videoId} publish date:`, publishDate);
             } catch (error) {
                 console.warn(`Failed to get info for short ${videoId}:`, error);
+                
+                // Try getting shorts info as fallback
+                try {
+                    const shortInfo = await yt.getShortsVideoInfo(videoId);
+                    publishDate = shortInfo?.regularInfo?.primary_info?.published?.text ||
+                                 shortInfo?.primary_info?.published?.text;
+                    console.log(`Fallback - Short ${videoId} publish date:`, publishDate);
+                } catch (fallbackError) {
+                    console.warn(`Failed to get shorts info for ${videoId}:`, fallbackError);
+                }
             }
 
             return {
