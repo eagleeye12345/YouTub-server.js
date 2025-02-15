@@ -486,10 +486,34 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         // Process current page shorts
         const shortsForCurrentPage = allShorts.slice((page - 1) * limit, page * limit);
         const processedShorts = shortsForCurrentPage.map(short => {
-            // Extract publish date from the short's metadata directly
-            const publishDate = short.published?.text || 
-                              short.publishedTimeText?.text ||
-                              short.overlay_metadata?.published_time?.text;
+            // Try multiple paths to get the publish date
+            const publishDate = 
+                // Try Video class published property
+                short.published?.text ||
+                // Try publishedTimeText 
+                short.publishedTimeText?.text ||
+                // Try overlay metadata
+                short.overlay_metadata?.published_time?.text ||
+                // Try basic info path
+                short.basic_info?.published?.text ||
+                // Try primary info path
+                short.primary_info?.published?.text ||
+                // Try raw data path
+                short.raw?.primary_info?.published?.text ||
+                // Try relative date as last resort
+                short.primary_info?.relative_date?.text;
+
+            // Debug the date extraction
+            console.log('Date extraction paths:', {
+                published_text: short.published?.text,
+                publishedTimeText: short.publishedTimeText?.text,
+                overlay_metadata: short.overlay_metadata?.published_time?.text,
+                basic_info: short.basic_info?.published?.text,
+                primary_info: short.primary_info?.published?.text,
+                raw_primary_info: short.raw?.primary_info?.published?.text,
+                relative_date: short.primary_info?.relative_date?.text,
+                final_date: publishDate
+            });
 
             return {
                 video_id: short.id || short.on_tap_endpoint?.payload?.videoId,
