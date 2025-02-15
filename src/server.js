@@ -455,7 +455,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         console.log('Fetching shorts for channel:', req.params.channelId);
         
         const channel = await yt.getChannel(req.params.channelId);
-        
+
         if (!channel.has_shorts) {
             return res.json({
                 shorts: [],
@@ -479,47 +479,64 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             }
 
             if (currentPage < page && currentBatch?.has_continuation) {
-                currentBatch = await currentBatch.getContinuation();
+                    currentBatch = await currentBatch.getContinuation();
             }
         }
 
         // Process current page shorts
         const shortsForCurrentPage = allShorts.slice((page - 1) * limit, page * limit);
         const processedShorts = await Promise.all(shortsForCurrentPage.map(async short => {
+            // Get video ID from the short
             const videoId = short.id || short.on_tap_endpoint?.payload?.videoId;
+            
             let publishDate = null;
             
             try {
+                // Get regular video info instead of shorts info
                 const videoInfo = await yt.getInfo(videoId);
+                
+                // Log the full response for debugging
+                console.log(`Video ${videoId} info:`, JSON.stringify({
+                    basic_info: videoInfo?.basic_info,
+                    primary_info: videoInfo?.primary_info,
+                    regularInfo: videoInfo?.regularInfo
+                }, null, 2));
+
+                // Try multiple paths to get the publish date
                 publishDate = videoInfo?.primary_info?.published?.text ||
                              videoInfo?.basic_info?.publish_date ||
                              videoInfo?.regularInfo?.primary_info?.published?.text;
-            } catch (error) {
+
+                console.log(`Short ${videoId} publish date:`, publishDate);
+                } catch (error) {
+                console.warn(`Failed to get info for short ${videoId}:`, error);
+                
                 // Try getting shorts info as fallback
                 try {
                     const shortInfo = await yt.getShortsVideoInfo(videoId);
                     publishDate = shortInfo?.regularInfo?.primary_info?.published?.text ||
                                  shortInfo?.primary_info?.published?.text;
+                    console.log(`Fallback - Short ${videoId} publish date:`, publishDate);
                 } catch (fallbackError) {
-                    console.warn(`Failed to get publish date for short ${videoId}`);
+                    console.warn(`Failed to get shorts info for ${videoId}:`, fallbackError);
                 }
             }
 
             return {
-                video_id: videoId,
-                title: short.overlay_metadata?.primary_text?.text || 
-                       short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
+                    video_id: videoId,
+                    title: short.overlay_metadata?.primary_text?.text || 
+                           short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
                 description: short.description_snippet?.text || '',
-                thumbnail_url: short.thumbnail?.[0]?.url || 
-                             `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                    thumbnail_url: short.thumbnail?.[0]?.url || 
+                                 `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
                 published_at: publishDate ? parseYouTubeDate(publishDate) : null,
                 views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || 
                        (short.accessibility_text?.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i)?.[1]) || '0',
-                channel_id: channel.metadata?.external_id || '',
-                channel_title: channel.metadata?.title || '',
+                    channel_id: channel.metadata?.external_id || '',
+                    channel_title: channel.metadata?.title || '',
                 duration: short.duration?.text || '',
-                is_short: true
-            };
+                    is_short: true
+                };
         }));
 
         res.json({
