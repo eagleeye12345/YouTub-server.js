@@ -486,39 +486,22 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         // Process current page shorts
         const shortsForCurrentPage = allShorts.slice((page - 1) * limit, page * limit);
         const processedShorts = await Promise.all(shortsForCurrentPage.map(async short => {
-            // Get video ID from the short
             const videoId = short.id || short.on_tap_endpoint?.payload?.videoId;
-            
             let publishDate = null;
             
             try {
-                // Get regular video info instead of shorts info
                 const videoInfo = await yt.getInfo(videoId);
-                
-                // Log the full response for debugging
-                console.log(`Video ${videoId} info:`, JSON.stringify({
-                    basic_info: videoInfo?.basic_info,
-                    primary_info: videoInfo?.primary_info,
-                    regularInfo: videoInfo?.regularInfo
-                }, null, 2));
-
-                // Try multiple paths to get the publish date
                 publishDate = videoInfo?.primary_info?.published?.text ||
                              videoInfo?.basic_info?.publish_date ||
                              videoInfo?.regularInfo?.primary_info?.published?.text;
-
-                console.log(`Short ${videoId} publish date:`, publishDate);
             } catch (error) {
-                console.warn(`Failed to get info for short ${videoId}:`, error);
-                
                 // Try getting shorts info as fallback
                 try {
                     const shortInfo = await yt.getShortsVideoInfo(videoId);
                     publishDate = shortInfo?.regularInfo?.primary_info?.published?.text ||
                                  shortInfo?.primary_info?.published?.text;
-                    console.log(`Fallback - Short ${videoId} publish date:`, publishDate);
                 } catch (fallbackError) {
-                    console.warn(`Failed to get shorts info for ${videoId}:`, fallbackError);
+                    console.warn(`Failed to get publish date for short ${videoId}`);
                 }
             }
 
