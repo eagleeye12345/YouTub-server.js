@@ -485,70 +485,46 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
 
         // Process current page shorts
         const shortsForCurrentPage = allShorts.slice((page - 1) * limit, page * limit);
-        const processedShorts = shortsForCurrentPage.map(short => {
-            // Debug the entire short object
-            console.log('Full short object:', JSON.stringify(short, null, 2));
-
-            // Try multiple paths to get the publish date
-            const publishDate = 
-                // Try Video class published property
-                short.published?.text ||
-                // Try publishedTimeText 
-                short.publishedTimeText?.text ||
-                // Try overlay metadata
-                short.overlay_metadata?.published_time?.text ||
-                // Try basic info path
-                short.basic_info?.published?.text ||
-                // Try primary info path
-                short.primary_info?.published?.text ||
-                // Try raw data path
-                short.raw?.primary_info?.published?.text ||
-                // Try relative date as last resort
-                short.primary_info?.relative_date?.text ||
-                // Try accessibility text for date
-                (short.accessibility_text?.match(/(?:Uploaded|Published|Streamed) on (.+?)(?:\.|$)/i)?.[1]);
-
-            // Debug all available properties
-            console.log('Short properties:', {
-                id: short.id,
-                videoId: short.videoId,
-                on_tap_endpoint: short.on_tap_endpoint,
-                accessibility_text: short.accessibility_text,
-                overlay_metadata: short.overlay_metadata,
-                published: short.published,
-                publishedTimeText: short.publishedTimeText,
-                metadata: short.metadata,
-                final_date: publishDate
-            });
-
-            // Try to extract date from accessibility text if present
-            let dateFromAccessibility = null;
-            if (short.accessibility_text) {
-                console.log('Accessibility text:', short.accessibility_text);
-                const dateMatch = short.accessibility_text.match(/(?:Uploaded|Published|Streamed) on (.+?)(?:\.|$)/i);
-                if (dateMatch) {
-                    dateFromAccessibility = dateMatch[1];
-                    console.log('Found date in accessibility text:', dateFromAccessibility);
+        const processedShorts = await Promise.all(shortsForCurrentPage.map(async short => {
+            // Get video ID from the short
+            const videoId = short.id || short.on_tap_endpoint?.payload?.videoId;
+            
+            // Try to get publish date from initial data
+            let publishDate = null;
+            
+            try {
+                // Always fetch the full short info to get accurate publish date
+                const shortInfo = await yt.getShortsVideoInfo(videoId);
+                
+                // Check regularInfo path first (most reliable)
+                publishDate = shortInfo?.regularInfo?.primary_info?.published?.text;
+                
+                // Fallback paths if regularInfo is not available
+                if (!publishDate) {
+                    publishDate = shortInfo?.primary_info?.published?.text;
                 }
+
+                console.log(`Short ${videoId} publish date:`, publishDate);
+            } catch (error) {
+                console.warn(`Failed to get info for short ${videoId}:`, error);
             }
 
             return {
-                video_id: short.id || short.on_tap_endpoint?.payload?.videoId,
+                video_id: videoId,
                 title: short.overlay_metadata?.primary_text?.text || 
                        short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
                 description: short.description_snippet?.text || '',
                 thumbnail_url: short.thumbnail?.[0]?.url || 
-                             `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
-                published_at: publishDate || dateFromAccessibility ? parseYouTubeDate(publishDate || dateFromAccessibility) : null,
+                             `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                published_at: publishDate ? parseYouTubeDate(publishDate) : null,
                 views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || 
                        (short.accessibility_text?.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i)?.[1]) || '0',
                 channel_id: channel.metadata?.external_id || '',
                 channel_title: channel.metadata?.title || '',
                 duration: short.duration?.text || '',
-                is_short: true,
-                _debug_accessibility: short.accessibility_text // Temporary debug field
+                is_short: true
             };
-        });
+        }));
 
         res.json({
             shorts: processedShorts,
