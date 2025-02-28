@@ -535,11 +535,6 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                     viewCount = viewMatch ? viewMatch[1] : '0';
                 }
 
-                console.log('Extracted view count:', {
-                    raw: regularInfo?.primary_info?.view_count,
-                    extracted: viewCount
-                });
-
                 // Extract data directly from the combined info
                 const shortData = {
                     video_id: videoId,
