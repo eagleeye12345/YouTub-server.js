@@ -269,7 +269,7 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         const limit = parseInt(req.query.limit) || 30;
         const type = req.query.type || 'videos';
         
-        console.log(`Fetching ${type} for channel:`, req.params.channelId, `(page ${page})`);
+        console.log(`Fetching ${type} for channel: ${req.params.channelId} (page ${page})`);
         const channel = await yt.getChannel(req.params.channelId);
         
         // Get videos/shorts tab
@@ -277,66 +277,72 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
             await channel.getShorts() : 
             await channel.getVideos();
 
-        let currentBatch = videosTab;
-                let currentPage = 1;
+        console.log(`Found ${videosTab?.videos?.length} videos`);
 
-                // Skip to requested page
-                while (currentPage < page && currentBatch?.has_continuation) {
+        let currentBatch = videosTab;
+        let currentPage = 1;
+
+        // Skip to requested page
+        while (currentPage < page && currentBatch?.has_continuation) {
             currentBatch = await currentBatch.getContinuation();
-                    currentPage++;
-                }
+            currentPage++;
+        }
 
         // Process current page videos in parallel
-                if (currentBatch?.videos) {
-            const processPromises = currentBatch.videos
-                .slice(0, limit)
-                .map(async (video) => {
-                    try {
-                        // Extract basic info without additional API calls when possible
-                        const videoData = {
-                            video_id: video.id || video.videoId,
-                            title: video.title?.text || '',
-                            description: video.description_snippet?.text || '',
-                            thumbnail_url: video.thumbnail?.[0]?.url || 
-                                         `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
-                            published_at: video.published?.text ? 
-                                         parseYouTubeDate(video.published.text) : null,
-                            views: video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
-                            channel_id: channel.metadata?.external_id || '',
-                            channel_title: channel.metadata?.title || '',
-                            duration: video.duration?.text || '',
-                            is_short: type === 'shorts'
-                        };
+        if (currentBatch?.videos) {
+            const videos = currentBatch.videos.slice(0, limit);
+            const processedVideos = [];
+            let videoCount = 0;
 
-                        // Only fetch additional info if basic data is missing
-                        if (!videoData.title || !videoData.published_at) {
-                            const additionalInfo = type === 'shorts' ?
-                                await yt.getShortsVideoInfo(video.id) :
-                                await yt.getInfo(video.id);
-                            
-                            videoData.title = videoData.title || additionalInfo.basic_info?.title;
-                            videoData.description = videoData.description || additionalInfo.basic_info?.description;
-                            videoData.published_at = videoData.published_at || 
-                                parseYouTubeDate(additionalInfo.basic_info?.publish_date);
-                        }
+            for (const video of videos) {
+                try {
+                    videoCount++;
+                    console.log(`Processing video ${videoCount}/${videos.length}: ${video.id}`);
 
-                        return videoData;
-                    } catch (error) {
-                        console.error(`Error processing video ${video.id}:`, error);
-                        return null;
+                    // Extract basic info without additional API calls when possible
+                    const videoData = {
+                        video_id: video.id || video.videoId,
+                        title: video.title?.text || '',
+                        description: video.description_snippet?.text || '',
+                        thumbnail_url: video.thumbnail?.[0]?.url || 
+                                     `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
+                        published_at: video.published?.text ? 
+                                     parseYouTubeDate(video.published.text) : null,
+                        views: video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        duration: video.duration?.text || '',
+                        is_short: type === 'shorts'
+                    };
+
+                    // Only fetch additional info if basic data is missing
+                    if (!videoData.title || !videoData.published_at) {
+                        const additionalInfo = type === 'shorts' ?
+                            await yt.getShortsVideoInfo(video.id) :
+                            await yt.getInfo(video.id);
+                        
+                        videoData.title = videoData.title || additionalInfo.basic_info?.title;
+                        videoData.description = videoData.description || additionalInfo.basic_info?.description;
+                        videoData.published_at = videoData.published_at || 
+                            parseYouTubeDate(additionalInfo.basic_info?.publish_date);
                     }
-                });
 
-            const videos = (await Promise.all(processPromises)).filter(v => v !== null);
-
-            return res.json({
-            videos,
-            pagination: {
-                    has_more: currentBatch.has_continuation,
-                current_page: page,
-                items_per_page: limit,
-                total_items: videos.length
+                    processedVideos.push(videoData);
+                } catch (error) {
+                    console.error(`Error processing video: ${error.message}`);
+                    continue;
+                }
             }
+
+            console.log(`Successfully processed ${processedVideos.length} videos`);
+            return res.json({
+                videos: processedVideos,
+                pagination: {
+                    has_more: currentBatch.has_continuation,
+                    current_page: page,
+                    items_per_page: limit,
+                    total_items: processedVideos.length
+                }
             });
         }
 
