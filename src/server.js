@@ -452,19 +452,13 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 30;
         
-        console.log('Fetching shorts for channel:', req.params.channelId);
+        console.log(`Fetching shorts for channel: ${req.params.channelId} (page ${page})`);
         
         // Get channel
         const channel = await yt.getChannel(req.params.channelId);
-        
-        // Debug channel data
-        console.log('Channel data:', {
-            id: channel.metadata?.external_id,
-            has_shorts: channel.has_shorts,
-            available_tabs: channel.available_tabs
-        });
 
         if (!channel.has_shorts) {
+            console.log('No shorts found for channel');
             return res.json({
                 shorts: [],
                 pagination: { 
@@ -478,7 +472,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
 
         // Get shorts tab
         const shortsTab = await channel.getShorts();
-        console.log('Got shorts tab, videos count:', shortsTab?.videos?.length);
+        console.log(`Found ${shortsTab?.videos?.length} shorts`);
 
         let currentBatch = shortsTab;
         let allShorts = [];
@@ -490,13 +484,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             }
 
             if (currentPage < page && currentBatch?.has_continuation) {
-                try {
-                    currentBatch = await currentBatch.getContinuation();
-                    console.log(`Got continuation for page ${currentPage + 1}, videos:`, currentBatch?.videos?.length);
-                } catch (error) {
-                    console.error('Error getting continuation:', error);
-                    break;
-                }
+                currentBatch = await currentBatch.getContinuation();
             }
         }
 
@@ -505,37 +493,19 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         const endIndex = startIndex + limit;
         const shortsForCurrentPage = allShorts.slice(startIndex, endIndex);
 
-        console.log(`Processing ${shortsForCurrentPage.length} shorts for page ${page}`);
-
         // Process shorts
         const processedShorts = [];
+        let shortCount = 0;
         for (const short of shortsForCurrentPage) {
             try {
-                // Get video ID from on_tap_endpoint
                 const videoId = short.on_tap_endpoint?.payload?.videoId;
-                if (!videoId) {
-                    console.warn('Could not extract video ID from short');
-                    continue;
-                }
+                if (!videoId) continue;
 
-                console.log('Processing short:', videoId);
+                shortCount++;
+                console.log(`Processing short ${shortCount}/${shortsForCurrentPage.length}: ${videoId}`);
 
-                // Fetch both shorts and regular info
-                let shortInfo;
-                let regularInfo;
-
-                try {
-                    shortInfo = await yt.getShortsVideoInfo(videoId);
-                } catch (error) {
-                    console.warn('Failed to get shorts info:', error);
-                }
-
-                try {
-                    regularInfo = await yt.getInfo(videoId);
-                    console.log('Got regular info for short:', videoId);
-                } catch (error) {
-                    console.warn('Failed to get regular info:', error);
-                }
+                let shortInfo = await yt.getShortsVideoInfo(videoId).catch(() => null);
+                let regularInfo = await yt.getInfo(videoId).catch(() => null);
 
                 // Combine the info objects
                 const combinedInfo = {
@@ -588,15 +558,15 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 };
 
                 processedShorts.push(shortData);
-                console.log('Successfully processed short:', videoId, 'views:', viewCount);
 
             } catch (error) {
-                console.error('Error processing short:', error);
+                console.error(`Error processing short: ${error.message}`);
                 continue;
             }
         }
 
-        const response = {
+        console.log(`Successfully processed ${processedShorts.length} shorts`);
+        res.json({
             shorts: processedShorts,
             pagination: {
                 has_more: currentBatch?.has_continuation || false,
@@ -604,10 +574,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 items_per_page: limit,
                 total_items: processedShorts.length
             }
-        };
-
-        console.log(`Returning ${processedShorts.length} shorts`);
-        res.json(response);
+        });
 
     } catch (error) {
         console.error('Channel shorts error:', error);
