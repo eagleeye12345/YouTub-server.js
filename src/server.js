@@ -262,6 +262,11 @@ function extractViews(short) {
     }
 }
 
+// Helper function to get a clean thumbnail URL
+function getCleanThumbnailUrl(videoId) {
+    return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+}
+
 // Modify the channel videos endpoint to batch process videos
 app.get('/api/channel/:channelId/videos', async (req, res) => {
     try {
@@ -396,44 +401,27 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
 // Update the shorts processing logic in the /api/shorts/:videoId endpoint
 app.get('/api/shorts/:videoId', async (req, res) => {
     try {
-        let shortInfo;
-        let regularInfo;
+        console.log(`Fetching shorts info for: ${req.params.videoId}`);
         
-        try {
-            shortInfo = await yt.getShortsVideoInfo(req.params.videoId);
-            console.log('Got shorts info:', JSON.stringify(shortInfo?.primary_info, null, 2));
-        } catch (error) {
-            console.warn('Failed to get shorts info:', error);
-        }
-
-        try {
-            regularInfo = await yt.getInfo(req.params.videoId);
-            console.log('Got regular info:', JSON.stringify(regularInfo?.primary_info, null, 2));
-        } catch (error) {
-            console.warn('Failed to get regular info:', error);
-        }
-
-        if (!shortInfo && !regularInfo) {
-            return res.status(404).json({ error: 'Short not found or not available' });
-        }
-
+        // Get both shorts-specific and regular info
+        let shortInfo = await yt.getShortsVideoInfo(req.params.videoId).catch(() => null);
+        let regularInfo = await yt.getInfo(req.params.videoId).catch(() => null);
+        
         // Combine the info objects
         const combinedInfo = {
             ...shortInfo,
             regularInfo: regularInfo,
-            raw: shortInfo || regularInfo,
+            basic_info: shortInfo?.basic_info || regularInfo?.basic_info || {},
             primary_info: regularInfo?.primary_info || shortInfo?.primary_info
         };
 
-        console.log('Combined info primary_info:', JSON.stringify(combinedInfo.primary_info, null, 2));
-
+        // Extract simplified info
         const simplifiedInfo = {
-            video_id: combinedInfo.basic_info?.id || req.params.videoId,
-            title: combinedInfo.primary_info?.title?.text || 
-                   combinedInfo.basic_info?.title || '',
+            video_id: req.params.videoId,
+            title: combinedInfo.basic_info?.title || '',
             description: combinedInfo.basic_info?.description || '',
-            thumbnail_url: combinedInfo.basic_info?.thumbnail?.[0]?.url ||
-                         `https://i.ytimg.com/vi/${req.params.videoId}/hqdefault.jpg`,
+            // Always use the clean thumbnail URL format
+            thumbnail_url: getCleanThumbnailUrl(req.params.videoId),
             views: extractViews(combinedInfo) || '0',
             published_at: extractPublishedDate(combinedInfo),
             channel_id: combinedInfo.basic_info?.channel?.id,
@@ -547,8 +535,8 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                     title: short.overlay_metadata?.primary_text?.text || 
                            short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
                     description: combinedInfo.basic_info?.description || '',
-                    thumbnail_url: short.thumbnail?.[0]?.url || 
-                                 `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                    // Always use the clean thumbnail URL format
+                    thumbnail_url: getCleanThumbnailUrl(videoId),
                     published_at: regularInfo?.primary_info?.published?.text ? 
                                  new Date(regularInfo.primary_info.published.text).toISOString() : null,
                     views: viewCount,
