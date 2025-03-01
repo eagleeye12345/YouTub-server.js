@@ -445,8 +445,9 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 30;
+        const fetchDetailedInfo = req.query.detailed === 'true';
         
-        console.log(`Fetching shorts for channel: ${req.params.channelId} (page ${page})`);
+        console.log(`Fetching shorts for channel: ${req.params.channelId} (page ${page}, detailed: ${fetchDetailedInfo})`);
         
         // Get channel
         const channel = await yt.getChannel(req.params.channelId);
@@ -490,6 +491,43 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         // Process shorts
         const processedShorts = [];
         let shortCount = 0;
+        
+        // Add a function to extract date from accessibility text or other metadata
+        function extractDateFromShortMetadata(short) {
+            // Try to extract from accessibility text which often contains the date
+            if (short.accessibility_text) {
+                // Look for patterns like "3 days ago" in the accessibility text
+                const dateMatch = short.accessibility_text.match(/(\d+)\s+(year|month|week|day|hour|minute|second)s?\s+ago/i);
+                if (dateMatch) {
+                    return parseYouTubeDate(`${dateMatch[0]}`);
+                }
+            }
+            
+            // Try to extract from published_time_text if available
+            if (short.published_time_text?.simpleText) {
+                return parseYouTubeDate(short.published_time_text.simpleText);
+            }
+            
+            // Try to extract from time_text if available
+            if (short.time_text?.simpleText) {
+                return parseYouTubeDate(short.time_text.simpleText);
+            }
+            
+            // Try to extract from thumbnail overlay
+            if (short.thumbnail_overlays) {
+                for (const overlay of short.thumbnail_overlays) {
+                    if (overlay.thumbnailOverlayTimeStatusRenderer?.text?.simpleText) {
+                        const timeText = overlay.thumbnailOverlayTimeStatusRenderer.text.simpleText;
+                        if (timeText.includes('ago')) {
+                            return parseYouTubeDate(timeText);
+                        }
+                    }
+                }
+            }
+            
+            return null;
+        }
+
         for (const short of shortsForCurrentPage) {
             try {
                 const videoId = short.on_tap_endpoint?.payload?.videoId;
@@ -497,95 +535,81 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
 
                 shortCount++;
                 console.log(`Processing short ${shortCount}/${shortsForCurrentPage.length}: ${videoId}`);
+                
+                // Extract basic info from the short object
+                let publishedDate = extractDateFromShortMetadata(short);
+                let viewCount = extractViewsFromShortMetadata(short);
+                let title = short.overlay_metadata?.primary_text?.text || 
+                           short.title?.simpleText ||
+                           short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '';
+                let description = short.description?.simpleText || '';
+                
+                // Only fetch detailed info if explicitly requested
+                if (fetchDetailedInfo) {
+                    // Try to get shorts info, but handle parsing errors gracefully
+                    let shortInfo = null;
+                    try {
+                        shortInfo = await yt.getShortsVideoInfo(videoId);
+                    } catch (error) {
+                        console.log(`Error getting shorts info for ${videoId}: ${error.message}`);
+                    }
 
-                // Try to get shorts info, but handle parsing errors gracefully
-                let shortInfo = null;
-                try {
-                    shortInfo = await yt.getShortsVideoInfo(videoId);
-                } catch (error) {
-                    console.log(`Error getting shorts info for ${videoId}: ${error.message}`);
-                    // Continue with shortInfo as null
-                }
-
-                // Try to get regular info as fallback, but handle parsing errors gracefully
-                let regularInfo = null;
-                try {
-                    regularInfo = await yt.getInfo(videoId);
-                } catch (error) {
-                    console.log(`Error getting regular info for ${videoId}: ${error.message}`);
-                    // Continue with regularInfo as null
-                }
-
-                // If both API calls failed, extract basic info from the short object
-                if (!shortInfo && !regularInfo) {
-                    console.log(`Using fallback data extraction for ${videoId}`);
+                    // Try to get regular info as fallback, but handle parsing errors gracefully
+                    let regularInfo = null;
+                    try {
+                        regularInfo = await yt.getInfo(videoId);
+                    } catch (error) {
+                        console.log(`Error getting regular info for ${videoId}: ${error.message}`);
+                    }
                     
-                    const shortData = {
-                        video_id: videoId,
-                        title: short.overlay_metadata?.primary_text?.text || 
-                               short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
-                        description: '',
-                        thumbnail_url: getCleanThumbnailUrl(videoId),
-                        published_at: null,
-                        views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
-                        channel_id: channel.metadata?.external_id || '',
-                        channel_title: channel.metadata?.title || '',
-                        duration: '',
-                        is_short: true
-                    };
-                    
-                    processedShorts.push(shortData);
-                    continue;
+                    // Update with more accurate info if available
+                    if (shortInfo || regularInfo) {
+                        const combinedInfo = {
+                            ...shortInfo,
+                            regularInfo: regularInfo,
+                            raw: shortInfo || regularInfo,
+                            primary_info: regularInfo?.primary_info || shortInfo?.primary_info
+                        };
+                        
+                        // Update with more accurate data if available
+                        if (regularInfo?.primary_info?.published?.text) {
+                            publishedDate = new Date(regularInfo.primary_info.published.text).toISOString();
+                        }
+                        
+                        if (combinedInfo.basic_info?.title) {
+                            title = combinedInfo.basic_info.title;
+                        }
+                        
+                        if (combinedInfo.basic_info?.description) {
+                            description = combinedInfo.basic_info.description;
+                        }
+                        
+                        // Get more accurate view count
+                        if (regularInfo?.primary_info?.view_count?.view_count?.text) {
+                            viewCount = regularInfo.primary_info.view_count.view_count.text.replace(/[^0-9]/g, '');
+                        } else if (regularInfo?.primary_info?.view_count?.original_view_count) {
+                            viewCount = regularInfo.primary_info.view_count.original_view_count;
+                        } else if (regularInfo?.basic_info?.view_count) {
+                            viewCount = regularInfo.basic_info.view_count.toString();
+                        }
+                    }
                 }
 
-                // Combine the info objects
-                const combinedInfo = {
-                    ...shortInfo,
-                    regularInfo: regularInfo,
-                    raw: shortInfo || regularInfo,
-                    primary_info: regularInfo?.primary_info || shortInfo?.primary_info
-                };
-
-                // Get exact view count
-                let viewCount = '';
-                if (regularInfo?.primary_info?.view_count?.view_count?.text) {
-                    // Use exact view count from view_count.text (e.g., "245,906 views")
-                    viewCount = regularInfo.primary_info.view_count.view_count.text.replace(/[^0-9]/g, '');
-                } else if (regularInfo?.primary_info?.view_count?.original_view_count) {
-                    // Try original_view_count as backup
-                    viewCount = regularInfo.primary_info.view_count.original_view_count;
-                } else if (regularInfo?.basic_info?.view_count) {
-                    // Fallback to basic_info view count
-                    viewCount = regularInfo.basic_info.view_count.toString();
-                } else if (short.overlay_metadata?.secondary_text?.text) {
-                    // Fallback to overlay metadata
-                    viewCount = short.overlay_metadata.secondary_text.text.replace(/[^0-9.KMB]/gi, '');
-                } else if (short.accessibility_text) {
-                    // Last resort: try to extract from accessibility text
-                    const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i);
-                    viewCount = viewMatch ? viewMatch[1] : '0';
-                }
-
-                // Extract data directly from the combined info
+                // Create the short data object
                 const shortData = {
                     video_id: videoId,
-                    title: short.overlay_metadata?.primary_text?.text || 
-                           combinedInfo.basic_info?.title ||
-                           short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
-                    description: combinedInfo.basic_info?.description || '',
-                    // Always use the clean thumbnail URL format
+                    title: title,
+                    description: description,
                     thumbnail_url: getCleanThumbnailUrl(videoId),
-                    published_at: regularInfo?.primary_info?.published?.text ? 
-                                 new Date(regularInfo.primary_info.published.text).toISOString() : null,
+                    published_at: publishedDate,
                     views: viewCount,
                     channel_id: channel.metadata?.external_id || '',
                     channel_title: channel.metadata?.title || '',
-                    duration: combinedInfo.basic_info?.duration?.text || '',
+                    duration: short.thumbnail_overlays?.[0]?.thumbnailOverlayTimeStatusRenderer?.text?.simpleText || '',
                     is_short: true
                 };
-
+                
                 processedShorts.push(shortData);
-
             } catch (error) {
                 console.error(`Error processing short: ${error.message}`);
                 continue;
@@ -608,6 +632,19 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// Helper function to extract views from short metadata
+function extractViewsFromShortMetadata(short) {
+    if (short.overlay_metadata?.secondary_text?.text) {
+        return short.overlay_metadata.secondary_text.text.replace(/[^0-9.KMB]/gi, '');
+    } else if (short.accessibility_text) {
+        const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i);
+        return viewMatch ? viewMatch[1] : '0';
+    } else if (short.view_count?.simpleText) {
+        return short.view_count.simpleText.replace(/[^0-9.KMB]/gi, '');
+    }
+    return '0';
+}
 
 // Add a new debug endpoint for shorts
 app.get('/api/debug/shorts/:videoId', async (req, res) => {
