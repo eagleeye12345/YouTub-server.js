@@ -498,8 +498,45 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 shortCount++;
                 console.log(`Processing short ${shortCount}/${shortsForCurrentPage.length}: ${videoId}`);
 
-                let shortInfo = await yt.getShortsVideoInfo(videoId).catch(() => null);
-                let regularInfo = await yt.getInfo(videoId).catch(() => null);
+                // Try to get shorts info, but handle parsing errors gracefully
+                let shortInfo = null;
+                try {
+                    shortInfo = await yt.getShortsVideoInfo(videoId);
+                } catch (error) {
+                    console.log(`Error getting shorts info for ${videoId}: ${error.message}`);
+                    // Continue with shortInfo as null
+                }
+
+                // Try to get regular info as fallback, but handle parsing errors gracefully
+                let regularInfo = null;
+                try {
+                    regularInfo = await yt.getInfo(videoId);
+                } catch (error) {
+                    console.log(`Error getting regular info for ${videoId}: ${error.message}`);
+                    // Continue with regularInfo as null
+                }
+
+                // If both API calls failed, extract basic info from the short object
+                if (!shortInfo && !regularInfo) {
+                    console.log(`Using fallback data extraction for ${videoId}`);
+                    
+                    const shortData = {
+                        video_id: videoId,
+                        title: short.overlay_metadata?.primary_text?.text || 
+                               short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
+                        description: '',
+                        thumbnail_url: getCleanThumbnailUrl(videoId),
+                        published_at: null,
+                        views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        duration: '',
+                        is_short: true
+                    };
+                    
+                    processedShorts.push(shortData);
+                    continue;
+                }
 
                 // Combine the info objects
                 const combinedInfo = {
@@ -533,6 +570,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 const shortData = {
                     video_id: videoId,
                     title: short.overlay_metadata?.primary_text?.text || 
+                           combinedInfo.basic_info?.title ||
                            short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
                     description: combinedInfo.basic_info?.description || '',
                     // Always use the clean thumbnail URL format
