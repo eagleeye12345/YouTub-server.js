@@ -47,6 +47,55 @@ app.get('/', (req, res) => {
     res.json({ status: 'YouTube API service is running' });
 });
 
+// Add a function to extract topic channel from metadata rows
+function extractTopicFromMetadataRows(metadataRows) {
+    if (!metadataRows || !Array.isArray(metadataRows)) {
+        return null;
+    }
+    
+    for (const row of metadataRows) {
+        if (!row.metadata_parts || !Array.isArray(row.metadata_parts)) {
+            continue;
+        }
+        
+        for (const part of row.metadata_parts) {
+            if (!part.text || !part.text.runs || !Array.isArray(part.text.runs)) {
+                continue;
+            }
+            
+            // Look for text runs that might contain artist info with endpoints
+            for (const run of part.text.runs) {
+                if (run.endpoint?.payload?.browseId && 
+                    run.text && 
+                    !run.text.includes('Album') && 
+                    !run.text.includes('View full playlist')) {
+                    
+                    console.log(`Found potential artist endpoint in metadata: ${run.text} (${run.endpoint.payload.browseId})`);
+                    
+                    // If the text contains "Topic", it might be the topic channel directly
+                    if (run.text.includes('- Topic')) {
+                        return {
+                            id: run.endpoint.payload.browseId,
+                            title: run.text,
+                            source: 'metadata_topic_text'
+                        };
+                    }
+                    
+                    // Otherwise, store it as a potential artist channel to check later
+                    return {
+                        id: run.endpoint.payload.browseId,
+                        title: run.text,
+                        isArtistChannel: true,
+                        source: 'metadata_artist_text'
+                    };
+                }
+            }
+        }
+    }
+    
+    return null;
+}
+
 // Add a function to extract topic channel ID from playlist data
 async function extractTopicFromPlaylist(playlistId) {
     try {
@@ -100,7 +149,7 @@ async function extractTopicFromPlaylist(playlistId) {
     }
 }
 
-// Update the findTopicChannelId function to also check playlists in releases tab
+// Update the findTopicChannelId function to directly check playlist IDs
 async function findTopicChannelId(artistName, channelId) {
     try {
         console.log(`Searching for topic channel for: ${artistName}`);
@@ -224,9 +273,29 @@ async function findTopicChannelId(artistName, channelId) {
             );
             
             if (releasesShelf?.content?.items) {
-                // Look through all playlist items in the releases shelf
+                // First, check each item's metadata for topic channel references
                 for (const item of releasesShelf.content.items) {
-                    // Check if the item has a playlist ID
+                    if (item.metadata?.metadata?.metadata_rows) {
+                        const topicFromMetadata = extractTopicFromMetadataRows(item.metadata.metadata.metadata_rows);
+                        
+                        if (topicFromMetadata) {
+                            // If we found a direct topic channel, return it
+                            if (!topicFromMetadata.isArtistChannel) {
+                                return topicFromMetadata;
+                            }
+                            
+                            // If we found an artist channel, try to find its associated topic channel
+                            if (topicFromMetadata.isArtistChannel && topicFromMetadata.id !== channelId) {
+                                console.log(`Found artist channel, checking for its topic channel: ${topicFromMetadata.title} (${topicFromMetadata.id})`);
+                                const artistTopicChannel = await findTopicChannelId(topicFromMetadata.title, topicFromMetadata.id);
+                                if (artistTopicChannel) {
+                                    return artistTopicChannel;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Then check for playlist IDs as before
                     let playlistId = null;
                     
                     // Extract playlist ID from various possible locations
@@ -251,6 +320,72 @@ async function findTopicChannelId(artistName, channelId) {
             }
         } catch (err) {
             console.log('Could not find topic channel via release playlists:', err.message);
+        }
+        
+        // Sixth try: Directly check playlist IDs from the releases tab
+        try {
+            console.log('Trying to find topic channel by directly checking playlist IDs...');
+            const channel = await yt.getChannel(channelId);
+            
+            // Find releases shelf
+            const releasesShelf = channel.shelves?.find(shelf => 
+                shelf.type?.includes('Release') || 
+                (shelf.title?.text && shelf.title.text.includes('Release'))
+            );
+            
+            if (releasesShelf?.content?.items) {
+                // Extract all playlist IDs from the releases shelf
+                const playlistIds = [];
+                
+                for (const item of releasesShelf.content.items) {
+                    // Check for playlist ID in various locations
+                    if (item.content_id) {
+                        playlistIds.push(item.content_id);
+                    }
+                    
+                    // Check in renderer_context
+                    if (item.renderer_context?.command_context?.on_tap?.payload?.playlistId) {
+                        playlistIds.push(item.renderer_context.command_context.on_tap.payload.playlistId);
+                    }
+                    
+                    // Check in metadata
+                    if (item.metadata?.metadata?.metadata_rows) {
+                        for (const row of item.metadata.metadata.metadata_rows) {
+                            if (row.metadata_parts) {
+                                for (const part of row.metadata_parts) {
+                                    if (part.text?.runs) {
+                                        for (const run of part.text.runs) {
+                                            if (run.endpoint?.metadata?.url?.includes('playlist?list=')) {
+                                                const url = new URL(`https://youtube.com${run.endpoint.metadata.url}`);
+                                                const playlistId = url.searchParams.get('list');
+                                                if (playlistId) {
+                                                    playlistIds.push(playlistId);
+                                                }
+                                            } else if (run.endpoint?.payload?.browseId?.startsWith('VL')) {
+                                                playlistIds.push(run.endpoint.payload.browseId.substring(2));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Remove duplicates
+                const uniquePlaylistIds = [...new Set(playlistIds)];
+                console.log(`Found ${uniquePlaylistIds.length} unique playlist IDs to check`);
+                
+                // Check each playlist for topic channel info
+                for (const playlistId of uniquePlaylistIds) {
+                    const topicInfo = await extractTopicFromPlaylist(playlistId);
+                    if (topicInfo) {
+                        return topicInfo;
+                    }
+                }
+            }
+        } catch (err) {
+            console.log('Could not find topic channel via direct playlist checks:', err.message);
         }
         
         return null;
