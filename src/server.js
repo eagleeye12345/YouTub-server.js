@@ -417,66 +417,54 @@ async function findTopicChannelId(artistName, channelId) {
 // Update the channel endpoint to always search for the topic channel for music artists
 app.get('/api/channel/:channelId', async (req, res) => {
     try {
-        console.log('Fetching channel:', req.params.channelId);
-        const channel = await yt.getChannel(req.params.channelId);
+        const channelId = req.params.channelId;
+        const channel = await yt.getChannel(channelId);
         
-        // Extract channel info from metadata and header
+        // Extract basic channel info
         const channelInfo = {
-            id: channel.metadata.external_id,
-            title: channel.metadata.title,
-            description: channel.metadata.description,
-            thumbnail_url: channel.metadata.avatar?.[0]?.url || 
-                         channel.metadata.thumbnail?.[0]?.url || 
-                         channel.header?.author?.thumbnail?.[0]?.url,
-            banner_url: channel.header?.banner?.desktop?.[0]?.url ||
-                       channel.header?.banner?.mobile?.[0]?.url ||
-                       channel.header?.banner?.tv?.[0]?.url ||
-                       channel.header?.content?.banner?.image?.[0]?.url,
-            subscriber_count: channel.header?.subscriber_count?.text || 
-                             channel.metadata?.subscriber_count || '',
-            topic: extractChannelTopic(channel)
+            id: channelId,
+            title: channel.metadata?.title,
+            description: channel.metadata?.description,
+            subscriberCount: channel.header?.subscriber_count?.text,
+            thumbnailUrl: channel.metadata?.thumbnail?.[0]?.url,
+            bannerUrl: channel.metadata?.banner?.[0]?.url,
+            isVerified: channel.header?.badges?.some(badge => badge.style === 'BADGE_STYLE_TYPE_VERIFIED'),
         };
-
+        
         // Check if this is likely a music artist channel by looking for releases shelf
         const hasReleasesShelf = channel.shelves?.some(shelf => 
             shelf.type?.includes('Release') || 
             (shelf.title?.text && shelf.title.text.includes('Release'))
         );
-
-        // If we found a topic in the channel data OR it's a music artist channel,
-        // try to find the actual topic channel by searching
-        if (channelInfo.topic || hasReleasesShelf) {
+        
+        // If it's a music artist channel, try to find the topic channel
+        if (hasReleasesShelf) {
             console.log('This appears to be a music artist channel, searching for topic channel...');
-            const topicChannel = await findTopicChannelId(channelInfo.title, channelInfo.id);
             
-            if (topicChannel) {
-                // If we already had topic info, merge it; otherwise create new topic info
-                if (channelInfo.topic) {
-                    channelInfo.topic = {
-                        ...channelInfo.topic,
-                        ...topicChannel
-                    };
-                } else {
-                    channelInfo.topic = {
-                        title: `${channelInfo.title} - Topic`,
-                        ...topicChannel
-                    };
-                }
+            // First try: Search for "Artist Name - Topic"
+            const searchQuery = `${channelInfo.title} - Topic`;
+            const searchResults = await yt.search(searchQuery);
+            
+            // Look for an exact match in the search results
+            const topicChannel = searchResults.channels?.find(channel => 
+                channel.name?.toLowerCase().includes('topic') && 
+                channel.name?.toLowerCase().includes(channelInfo.title.toLowerCase())
+            );
+            
+            if (topicChannel && topicChannel.id !== channelId) {
+                console.log(`Found topic channel via search: ${topicChannel.name} (${topicChannel.id})`);
+                channelInfo.topic = {
+                    id: topicChannel.id,
+                    title: topicChannel.name,
+                    source: 'search_results'
+                };
             }
         }
-
-        // Log the extracted info
-        console.log('Extracted channel info:', JSON.stringify(channelInfo, null, 2));
-
-        if (!channelInfo.id || !channelInfo.title) {
-            console.error('Missing required channel info:', channelInfo);
-            throw new Error('Could not extract required channel information');
-        }
-
+        
         res.json(channelInfo);
     } catch (error) {
-        console.error('Channel error:', error);
-        res.status(500).json({ error: error.message });
+        console.error('Error fetching channel:', error);
+        res.status(500).json({ error: 'Error fetching channel' });
     }
 });
 
