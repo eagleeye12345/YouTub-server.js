@@ -47,21 +47,42 @@ app.get('/', (req, res) => {
     res.json({ status: 'YouTube API service is running' });
 });
 
-// Get channel info endpoint
+// Add a function to fetch the actual topic channel ID
+async function findTopicChannelId(artistName) {
+    try {
+        console.log(`Searching for topic channel for: ${artistName}`);
+        
+        // Search for "Artist Name - Topic" which is how YouTube names these channels
+        const searchQuery = `${artistName} - Topic`;
+        const searchResults = await yt.search(searchQuery);
+        
+        // Look for channels in search results
+        const topicChannel = searchResults.channels?.find(channel => 
+            channel.name?.toLowerCase().includes('topic') && 
+            channel.name?.toLowerCase().includes(artistName.toLowerCase())
+        );
+        
+        if (topicChannel) {
+            console.log(`Found topic channel: ${topicChannel.name} (${topicChannel.id})`);
+            return {
+                id: topicChannel.id,
+                title: topicChannel.name,
+                source: 'search_results'
+            };
+        }
+        
+        return null;
+    } catch (error) {
+        console.error('Error finding topic channel:', error);
+        return null;
+    }
+}
+
+// Update the channel endpoint to also search for the topic channel
 app.get('/api/channel/:channelId', async (req, res) => {
     try {
         console.log('Fetching channel:', req.params.channelId);
         const channel = await yt.getChannel(req.params.channelId);
-        
-        // Debug log to see available metadata
-        console.log('Channel metadata structure:', 
-            JSON.stringify({
-                metadata_keys: Object.keys(channel.metadata || {}),
-                header_keys: Object.keys(channel.header || {}),
-                has_shelves: !!channel.shelves,
-                shelf_count: channel.shelves?.length
-            }, null, 2)
-        );
         
         // Extract channel info from metadata and header
         const channelInfo = {
@@ -79,6 +100,18 @@ app.get('/api/channel/:channelId', async (req, res) => {
                              channel.metadata?.subscriber_count || '',
             topic: extractChannelTopic(channel)
         };
+
+        // If we found a topic in the channel data but it doesn't have a different ID,
+        // try to find the actual topic channel by searching
+        if (channelInfo.topic && channelInfo.topic.id === channelInfo.id) {
+            const topicChannel = await findTopicChannelId(channelInfo.title);
+            if (topicChannel) {
+                channelInfo.topic = {
+                    ...channelInfo.topic,
+                    ...topicChannel
+                };
+            }
+        }
 
         // Log the extracted info
         console.log('Extracted channel info:', JSON.stringify(channelInfo, null, 2));
