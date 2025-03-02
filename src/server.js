@@ -399,6 +399,7 @@ function extractChannelTopic(channel) {
                 const params = releasesTab.title.endpoint.payload.params;
                 const url = releasesTab.title.endpoint.metadata?.url;
                 
+                // Get the actual topic channel ID
                 return {
                     title: `${channel.metadata?.title || ''} - Topic`,
                     id: channel.metadata?.external_id,
