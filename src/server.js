@@ -47,7 +47,60 @@ app.get('/', (req, res) => {
     res.json({ status: 'YouTube API service is running' });
 });
 
-// Add a more robust function to detect and fetch topic channels
+// Add a function to extract topic channel ID from playlist data
+async function extractTopicFromPlaylist(playlistId) {
+    try {
+        console.log(`Examining playlist for topic channel info: ${playlistId}`);
+        const playlist = await yt.getPlaylist(playlistId);
+        
+        // Check if the playlist owner is a topic channel
+        if (playlist.info?.author?.name?.includes('- Topic')) {
+            console.log(`Found topic channel via playlist: ${playlist.info.author.name} (${playlist.info.author.id})`);
+            return {
+                id: playlist.info.author.id,
+                title: playlist.info.author.name,
+                source: 'playlist_author'
+            };
+        }
+        
+        // Check the first video in the playlist
+        if (playlist.items?.length > 0) {
+            const firstVideo = playlist.items[0];
+            
+            // Check if the video's channel is a topic channel
+            if (firstVideo.author?.name?.includes('- Topic')) {
+                console.log(`Found topic channel via playlist video: ${firstVideo.author.name} (${firstVideo.author.id})`);
+                return {
+                    id: firstVideo.author.id,
+                    title: firstVideo.author.name,
+                    source: 'playlist_video_author'
+                };
+            }
+            
+            // Try to get the video info to find the topic channel
+            try {
+                const videoInfo = await yt.getInfo(firstVideo.id);
+                if (videoInfo.basic_info?.channel?.name?.includes('- Topic')) {
+                    console.log(`Found topic channel via video info: ${videoInfo.basic_info.channel.name} (${videoInfo.basic_info.channel.id})`);
+                    return {
+                        id: videoInfo.basic_info.channel.id,
+                        title: videoInfo.basic_info.channel.name,
+                        source: 'playlist_video_info'
+                    };
+                }
+            } catch (err) {
+                console.log(`Could not get video info: ${err.message}`);
+            }
+        }
+        
+        return null;
+    } catch (error) {
+        console.log(`Error examining playlist: ${error.message}`);
+        return null;
+    }
+}
+
+// Update the findTopicChannelId function to also check playlists in releases tab
 async function findTopicChannelId(artistName, channelId) {
     try {
         console.log(`Searching for topic channel for: ${artistName}`);
@@ -157,6 +210,47 @@ async function findTopicChannelId(artistName, channelId) {
             }
         } catch (err) {
             console.log('Could not find topic channel via releases tab:', err.message);
+        }
+        
+        // Fifth try: Check for playlists in releases tab
+        try {
+            console.log('Trying to find topic channel via release playlists...');
+            const channel = await yt.getChannel(channelId);
+            
+            // Find releases shelf
+            const releasesShelf = channel.shelves?.find(shelf => 
+                shelf.type?.includes('Release') || 
+                (shelf.title?.text && shelf.title.text.includes('Release'))
+            );
+            
+            if (releasesShelf?.content?.items) {
+                // Look through all playlist items in the releases shelf
+                for (const item of releasesShelf.content.items) {
+                    // Check if the item has a playlist ID
+                    let playlistId = null;
+                    
+                    // Extract playlist ID from various possible locations
+                    if (item.content_id) {
+                        playlistId = item.content_id;
+                    } else if (item.endpoint?.payload?.playlistId) {
+                        playlistId = item.endpoint.payload.playlistId;
+                    } else if (item.endpoint?.payload?.browseId?.startsWith('VL')) {
+                        playlistId = item.endpoint.payload.browseId.substring(2);
+                    } else if (item.renderer_context?.command_context?.on_tap?.payload?.playlistId) {
+                        playlistId = item.renderer_context.command_context.on_tap.payload.playlistId;
+                    }
+                    
+                    if (playlistId) {
+                        console.log(`Found playlist ID in releases: ${playlistId}`);
+                        const topicInfo = await extractTopicFromPlaylist(playlistId);
+                        if (topicInfo) {
+                            return topicInfo;
+                        }
+                    }
+                }
+            }
+        } catch (err) {
+            console.log('Could not find topic channel via release playlists:', err.message);
         }
         
         return null;
