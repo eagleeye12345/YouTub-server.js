@@ -149,11 +149,230 @@ async function extractTopicFromPlaylist(playlistId) {
     }
 }
 
-// Update the findTopicChannelId function to directly check playlist IDs
+// Add a function to directly check for the topic channel by ID pattern
+async function checkDirectTopicChannelId(artistName, channelId) {
+    try {
+        console.log('Trying direct topic channel ID check...');
+        
+        // First, try a direct check for the topic channel using the URL
+        // The URL format is typically: youtube.com/channel/UC...-Topic
+        
+        // 1. Try the exact artist name + "- Topic"
+        const topicName = `${artistName} - Topic`;
+        console.log(`Checking for topic channel with name: ${topicName}`);
+        
+        // 2. Try to construct the topic channel ID from the releases tab
+        // This is the most reliable approach for finding topic channels
+        try {
+            console.log('Checking releases tab for topic channel ID...');
+            const channel = await yt.getChannel(channelId);
+            
+            // Find the releases tab endpoint
+            const releasesTab = channel.shelves?.find(shelf => 
+                shelf.type?.includes('Release') || 
+                (shelf.title?.text && shelf.title.text.includes('Release'))
+            );
+            
+            if (releasesTab?.title?.endpoint?.payload?.params) {
+                // The params field often contains information about the topic channel
+                console.log(`Found releases tab with params: ${releasesTab.title.endpoint.payload.params}`);
+                
+                // Try to navigate to the releases tab to get more information
+                try {
+                    const browseId = releasesTab.title.endpoint.payload.browseId;
+                    const params = releasesTab.title.endpoint.payload.params;
+                    
+                    console.log(`Navigating to releases tab: browseId=${browseId}, params=${params}`);
+                    
+                    // Use the browse endpoint to get the releases page
+                    const releasesPage = await yt.browse({
+                        browseId: browseId,
+                        params: params
+                    });
+                    
+                    // Look for topic channel references in the releases page
+                    if (releasesPage.header?.author?.name?.includes('- Topic')) {
+                        console.log(`Found topic channel in releases page header: ${releasesPage.header.author.name} (${releasesPage.header.author.id})`);
+                        return {
+                            id: releasesPage.header.author.id,
+                            title: releasesPage.header.author.name,
+                            source: 'releases_page_header'
+                        };
+                    }
+                    
+                    // Check for topic channel in the first few releases
+                    if (releasesPage.contents?.length > 0) {
+                        for (const content of releasesPage.contents.slice(0, 5)) {
+                            if (content.author?.name?.includes('- Topic')) {
+                                console.log(`Found topic channel in release content: ${content.author.name} (${content.author.id})`);
+                                return {
+                                    id: content.author.id,
+                                    title: content.author.name,
+                                    source: 'releases_content'
+                                };
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.log(`Error navigating to releases tab: ${err.message}`);
+                }
+            }
+        } catch (err) {
+            console.log(`Error checking releases tab: ${err.message}`);
+        }
+        
+        // 3. Try to find the topic channel by searching for the artist name + "- Topic"
+        try {
+            console.log(`Searching for "${topicName}"...`);
+            const searchResults = await yt.search(topicName);
+            
+            // Look for an exact match in the search results
+            const exactMatch = searchResults.channels?.find(channel => 
+                channel.name?.toLowerCase() === topicName.toLowerCase()
+            );
+            
+            if (exactMatch) {
+                console.log(`Found exact match for topic channel in search: ${exactMatch.name} (${exactMatch.id})`);
+                return {
+                    id: exactMatch.id,
+                    title: exactMatch.name,
+                    source: 'search_exact_match'
+                };
+            }
+            
+            // Look for a close match in the search results
+            const closeMatch = searchResults.channels?.find(channel => 
+                channel.name?.toLowerCase().includes(artistName.toLowerCase()) && 
+                channel.name?.toLowerCase().includes('topic')
+            );
+            
+            if (closeMatch) {
+                console.log(`Found close match for topic channel in search: ${closeMatch.name} (${closeMatch.id})`);
+                return {
+                    id: closeMatch.id,
+                    title: closeMatch.name,
+                    source: 'search_close_match'
+                };
+            }
+        } catch (err) {
+            console.log(`Error searching for topic channel: ${err.message}`);
+        }
+        
+        return null;
+    } catch (error) {
+        console.log(`Error in direct topic channel check: ${error.message}`);
+        return null;
+    }
+}
+
+// Add a function to extract topic channel from releases tab params
+async function extractTopicFromReleasesParams(channelId, params) {
+    try {
+        console.log(`Extracting topic channel from releases params: ${params}`);
+        
+        // Use the browse endpoint with the channel ID and params to get the releases page
+        const releasesPage = await yt.browse({
+            browseId: channelId,
+            params: params
+        });
+        
+        console.log('Successfully loaded releases page');
+        
+        // Check if the releases page has a different header author than the original channel
+        if (releasesPage.header?.author?.id && releasesPage.header.author.id !== channelId) {
+            // If the author ID is different and contains "Topic", it's likely the topic channel
+            if (releasesPage.header.author.name?.includes('- Topic')) {
+                console.log(`Found topic channel in releases page header: ${releasesPage.header.author.name} (${releasesPage.header.author.id})`);
+                return {
+                    id: releasesPage.header.author.id,
+                    title: releasesPage.header.author.name,
+                    source: 'releases_params_header'
+                };
+            }
+        }
+        
+        // Check the contents of the releases page for topic channel references
+        if (releasesPage.contents) {
+            // Look for playlists or sections that might contain topic channel info
+            for (const content of releasesPage.contents) {
+                // Check if the content has an author that's a topic channel
+                if (content.author?.name?.includes('- Topic')) {
+                    console.log(`Found topic channel in releases content: ${content.author.name} (${content.author.id})`);
+                    return {
+                        id: content.author.id,
+                        title: content.author.name,
+                        source: 'releases_params_content'
+                    };
+                }
+                
+                // Check if the content has items with topic channel info
+                if (content.contents?.items) {
+                    for (const item of content.contents.items) {
+                        if (item.author?.name?.includes('- Topic')) {
+                            console.log(`Found topic channel in releases item: ${item.author.name} (${item.author.id})`);
+                            return {
+                                id: item.author.id,
+                                title: item.author.name,
+                                source: 'releases_params_item'
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        
+        // If we couldn't find a direct reference, try to extract from the first playlist
+        if (releasesPage.contents?.[0]?.contents?.items?.[0]?.id) {
+            const firstPlaylistId = releasesPage.contents[0].contents.items[0].id;
+            console.log(`Checking first playlist in releases: ${firstPlaylistId}`);
+            
+            const topicFromPlaylist = await extractTopicFromPlaylist(firstPlaylistId);
+            if (topicFromPlaylist) {
+                return topicFromPlaylist;
+            }
+        }
+        
+        return null;
+    } catch (error) {
+        console.log(`Error extracting topic from releases params: ${error.message}`);
+        return null;
+    }
+}
+
+// Update the findTopicChannelId function to use the releases params
 async function findTopicChannelId(artistName, channelId) {
     try {
-        console.log(`Searching for topic channel for: ${artistName}`);
+        // Try direct topic channel ID check first
+        const directTopicChannel = await checkDirectTopicChannelId(artistName, channelId);
+        if (directTopicChannel) {
+            return directTopicChannel;
+        }
         
+        // Check for releases tab params
+        try {
+            console.log('Checking for releases tab params...');
+            const channel = await yt.getChannel(channelId);
+            
+            // Find the releases tab
+            const releasesTab = channel.shelves?.find(shelf => 
+                shelf.type?.includes('Release') || 
+                (shelf.title?.text && shelf.title.text.includes('Release'))
+            );
+            
+            if (releasesTab?.title?.endpoint?.payload?.params) {
+                const params = releasesTab.title.endpoint.payload.params;
+                console.log(`Found params in releases shelf endpoint: ${params}`);
+                
+                const topicFromParams = await extractTopicFromReleasesParams(channelId, params);
+                if (topicFromParams) {
+                    return topicFromParams;
+                }
+            }
+        } catch (err) {
+            console.log(`Error checking releases tab params: ${err.message}`);
+        }
+        
+        // Continue with existing approaches...
         // First try: Direct search for "Artist Name - Topic"
         const searchQuery = `${artistName} - Topic`;
         const searchResults = await yt.search(searchQuery);
