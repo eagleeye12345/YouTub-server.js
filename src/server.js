@@ -135,7 +135,7 @@ app.get('/api/debug/channel/:channelId', async (req, res) => {
     }
 });
 
-// Update the extractChannelTopic function to look for TopicChannelDetails
+// Update the extractChannelTopic function to search for topic channel connections
 function extractChannelTopic(channel) {
     try {
         // First, check if there's a TopicChannelDetails node anywhere in the channel data
@@ -157,35 +157,109 @@ function extractChannelTopic(channel) {
             }
         }
         
-        // Check in shelves for TopicChannelDetails
-        if (channel.shelves) {
-            for (const shelf of channel.shelves) {
-                // Check if the shelf itself is a TopicChannelDetails
-                if (shelf.type === 'TopicChannelDetails') {
-                    console.log('Found TopicChannelDetails in shelf:', shelf);
+        // Look for topic channel in video endpoints
+        // Often, videos in a channel have links to the topic channel in their metadata
+        if (channel.videos?.length > 0) {
+            console.log('Checking videos for topic channel references...');
+            
+            for (const video of channel.videos.slice(0, 5)) { // Check first 5 videos
+                // Check if video has a music-related endpoint
+                if (video.endpoint?.payload?.watchEndpoint?.musicVideoType) {
+                    console.log('Found music video endpoint:', video.endpoint.payload.watchEndpoint);
+                    
+                    // Music videos often link to topic channels
                     return {
-                        title: shelf.title?.text || '',
-                        id: shelf.endpoint?.payload?.browseId || null,
-                        url: shelf.endpoint?.metadata?.url || null,
+                        title: channel.metadata?.title ? `${channel.metadata.title} - Topic` : 'Music Artist',
+                        id: video.endpoint.payload.watchEndpoint.musicVideoType,
                         type: 'topic_channel',
-                        source: 'topic_channel_details_shelf'
+                        source: 'music_video_endpoint'
+                    };
+                }
+            }
+        }
+        
+        // Check for releases shelf - this is often where the topic connection is found
+        let releasesShelf = channel.shelves?.find(shelf => 
+            shelf.type?.includes('Release') || 
+            (shelf.title?.text && shelf.title.text.includes('Release'))
+        );
+        
+        if (releasesShelf) {
+            console.log('Examining releases shelf for topic channel connection...');
+            
+            // Check if the shelf has a special browse endpoint
+            if (releasesShelf.endpoint?.payload?.browseId) {
+                const browseId = releasesShelf.endpoint.payload.browseId;
+                
+                // If the browseId is different from the current channel ID, it might be the topic channel
+                if (browseId !== channel.metadata?.external_id) {
+                    console.log('Found potential topic channel ID in releases shelf:', browseId);
+                    return {
+                        title: `${channel.metadata?.title || 'Artist'} - Topic`,
+                        id: browseId,
+                        url: releasesShelf.endpoint.metadata?.url || null,
+                        type: 'topic_channel',
+                        source: 'releases_shelf_endpoint'
+                    };
+                }
+            }
+            
+            // Check for playlist IDs in the releases shelf
+            if (releasesShelf.endpoint?.payload?.params) {
+                console.log('Found params in releases shelf endpoint:', releasesShelf.endpoint.payload.params);
+                
+                // The params often contain encoded information about the topic channel
+                return {
+                    title: `${channel.metadata?.title || 'Artist'} - Topic`,
+                    id: channel.metadata?.external_id || null,
+                    params: releasesShelf.endpoint.payload.params,
+                    url: releasesShelf.endpoint.metadata?.url || null,
+                    type: 'topic_channel',
+                    source: 'releases_shelf_params'
+                };
+            }
+            
+            // Check the first release item for topic channel info
+            if (releasesShelf.content?.items?.length > 0) {
+                const firstRelease = releasesShelf.content.items[0];
+                
+                // Debug the first release structure
+                console.log('Examining first release item for topic channel connection:', 
+                    JSON.stringify({
+                        title: firstRelease.title?.text,
+                        endpoint_type: firstRelease.endpoint?.type,
+                        payload: firstRelease.endpoint?.payload,
+                        navigation_type: firstRelease.endpoint?.payload?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType
+                    }, null, 2)
+                );
+                
+                // Check for music video type in the endpoint
+                if (firstRelease.endpoint?.payload?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType) {
+                    const musicVideoType = firstRelease.endpoint.payload.watchEndpoint.watchEndpointMusicSupportedConfigs.watchEndpointMusicConfig.musicVideoType;
+                    console.log('Found music video type:', musicVideoType);
+                    
+                    return {
+                        title: `${channel.metadata?.title || 'Artist'} - Topic`,
+                        id: channel.metadata?.external_id || null,
+                        music_video_type: musicVideoType,
+                        type: 'topic_channel',
+                        source: 'music_video_type'
                     };
                 }
                 
-                // Check if any items in the shelf are TopicChannelDetails
-                if (shelf.content?.items) {
-                    for (const item of shelf.content.items) {
-                        if (item.type === 'TopicChannelDetails') {
-                            console.log('Found TopicChannelDetails in shelf item:', item);
-                            return {
-                                title: item.title?.text || '',
-                                id: item.endpoint?.payload?.browseId || null,
-                                url: item.endpoint?.metadata?.url || null,
-                                type: 'topic_channel',
-                                source: 'topic_channel_details_item'
-                            };
-                        }
-                    }
+                // Check for playlist ID in the endpoint
+                if (firstRelease.endpoint?.payload?.watchEndpoint?.playlistId) {
+                    const playlistId = firstRelease.endpoint.payload.watchEndpoint.playlistId;
+                    console.log('Found playlist ID in release:', playlistId);
+                    
+                    // Playlists often link to topic channels
+                    return {
+                        title: `${channel.metadata?.title || 'Artist'} - Topic`,
+                        id: channel.metadata?.external_id || null,
+                        playlist_id: playlistId,
+                        type: 'topic_channel',
+                        source: 'release_playlist'
+                    };
                 }
             }
         }
@@ -202,8 +276,6 @@ function extractChannelTopic(channel) {
             };
         }
         
-        // Rest of the function remains the same...
-        
         // Check for artist info in header
         if (channel.header?.artist_info) {
             return {
@@ -216,11 +288,6 @@ function extractChannelTopic(channel) {
         }
         
         // Check for releases tab - enhanced to look deeper
-        const releasesShelf = channel.shelves?.find(shelf => 
-            shelf.type?.includes('Release') || 
-            (shelf.title?.text && shelf.title.text.includes('Release'))
-        );
-        
         if (releasesShelf) {
             console.log('Found releases shelf:', JSON.stringify({
                 title: releasesShelf.title?.text,
@@ -935,6 +1002,61 @@ app.get('/api/debug/shorts/:videoId', async (req, res) => {
             error: error.message,
             stack: error.stack
         });
+    }
+});
+
+// Add a more comprehensive debug endpoint for channel data
+app.get('/api/debug/channel/full/:channelId', async (req, res) => {
+    try {
+        console.log('Full debugging for channel:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Extract all video endpoints to look for topic connections
+        const videoEndpoints = [];
+        if (channel.videos?.length > 0) {
+            channel.videos.slice(0, 5).forEach(video => {
+                if (video.endpoint) {
+                    videoEndpoints.push({
+                        title: video.title?.text || '',
+                        endpoint: video.endpoint
+                    });
+                }
+            });
+        }
+        
+        // Look for all playlists that might contain topic information
+        const playlists = [];
+        if (channel.playlists?.length > 0) {
+            channel.playlists.forEach(playlist => {
+                playlists.push({
+                    title: playlist.title?.text || '',
+                    id: playlist.id,
+                    endpoint: playlist.endpoint
+                });
+            });
+        }
+        
+        // Create a comprehensive debug object
+        const debugData = {
+            channel_id: channel.metadata?.external_id,
+            title: channel.metadata?.title,
+            metadata: channel.metadata,
+            header: channel.header,
+            has_releases: channel.has_releases,
+            releases_tab: channel.shelves?.find(shelf => 
+                shelf.type?.includes('Release') || 
+                (shelf.title?.text && shelf.title.text.includes('Release'))
+            ),
+            video_endpoints: videoEndpoints,
+            playlists: playlists,
+            topic_extraction_result: extractChannelTopic(channel)
+        };
+        
+        res.header('Content-Type', 'application/json');
+        res.send(JSON.stringify(debugData, null, 2));
+    } catch (error) {
+        console.error('Channel full debug error:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
