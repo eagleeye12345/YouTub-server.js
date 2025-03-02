@@ -53,6 +53,16 @@ app.get('/api/channel/:channelId', async (req, res) => {
         console.log('Fetching channel:', req.params.channelId);
         const channel = await yt.getChannel(req.params.channelId);
         
+        // Debug log to see available metadata
+        console.log('Channel metadata structure:', 
+            JSON.stringify({
+                metadata_keys: Object.keys(channel.metadata || {}),
+                header_keys: Object.keys(channel.header || {}),
+                has_shelves: !!channel.shelves,
+                shelf_count: channel.shelves?.length
+            }, null, 2)
+        );
+        
         // Extract channel info from metadata and header
         const channelInfo = {
             id: channel.metadata.external_id,
@@ -64,7 +74,10 @@ app.get('/api/channel/:channelId', async (req, res) => {
             banner_url: channel.header?.banner?.desktop?.[0]?.url ||
                        channel.header?.banner?.mobile?.[0]?.url ||
                        channel.header?.banner?.tv?.[0]?.url ||
-                       channel.header?.content?.banner?.image?.[0]?.url
+                       channel.header?.content?.banner?.image?.[0]?.url,
+            subscriber_count: channel.header?.subscriber_count?.text || 
+                             channel.metadata?.subscriber_count || '',
+            topic: extractChannelTopic(channel)
         };
 
         // Log the extracted info
@@ -81,6 +94,154 @@ app.get('/api/channel/:channelId', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// Add a new debug endpoint for channel data
+app.get('/api/debug/channel/:channelId', async (req, res) => {
+    try {
+        console.log('Debugging channel:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Create a simplified version of the channel data for debugging
+        const debugData = {
+            metadata: channel.metadata,
+            header: channel.header,
+            shelves_summary: channel.shelves?.map(shelf => ({
+                type: shelf.type,
+                title: shelf.title?.text || null,
+                content_type: shelf.content?.type || null,
+                items_count: Array.isArray(shelf.content?.items) ? shelf.content.items.length : 0
+            })),
+            // Look for releases tab specifically
+            releases_tab: channel.shelves?.find(shelf => 
+                shelf.type?.includes('Release') || 
+                (shelf.title?.text && shelf.title.text.includes('Release'))
+            ),
+            // Look for music tab
+            music_tab: channel.shelves?.find(shelf => 
+                shelf.type?.includes('Music') || 
+                (shelf.title?.text && shelf.title.text.includes('Music'))
+            ),
+            // Look for artist info
+            artist_info: channel.header?.artist_info || null,
+            // Look for topic info
+            topic_info: channel.metadata?.topic || null
+        };
+        
+        res.header('Content-Type', 'application/json');
+        res.send(JSON.stringify(debugData, null, 2));
+    } catch (error) {
+        console.error('Channel debug error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update the extractChannelTopic function to also look in releases tab
+function extractChannelTopic(channel) {
+    try {
+        // Look for topic in various possible locations
+        
+        // Check for topic in metadata
+        if (channel.metadata?.topic) {
+            return {
+                title: channel.metadata.topic.title || channel.metadata.topic,
+                id: channel.metadata.topic.id || null,
+                url: channel.metadata.topic.url || null,
+                source: 'metadata'
+            };
+        }
+        
+        // Check for artist info in header
+        if (channel.header?.artist_info) {
+            return {
+                title: channel.header.artist_info.name || channel.header.artist_info.title,
+                id: channel.header.artist_info.id || null,
+                url: channel.header.artist_info.url || null,
+                type: 'artist',
+                source: 'header'
+            };
+        }
+        
+        // Check for releases tab
+        const releasesShelf = channel.shelves?.find(shelf => 
+            shelf.type?.includes('Release') || 
+            (shelf.title?.text && shelf.title.text.includes('Release'))
+        );
+        
+        if (releasesShelf?.content?.items?.length > 0) {
+            // Try to extract artist info from the first release
+            const firstRelease = releasesShelf.content.items[0];
+            
+            if (firstRelease.subtitle?.text) {
+                return {
+                    title: firstRelease.subtitle.text,
+                    type: 'artist',
+                    source: 'releases_shelf'
+                };
+            }
+        }
+        
+        // Check for music tab
+        const musicShelf = channel.shelves?.find(shelf => 
+            shelf.type?.includes('Music') || 
+            (shelf.title?.text && shelf.title.text.includes('Music'))
+        );
+        
+        if (musicShelf?.content?.items?.length > 0) {
+            // Try to extract artist info from the first music item
+            const firstMusic = musicShelf.content.items[0];
+            
+            if (firstMusic.subtitle?.text) {
+                return {
+                    title: firstMusic.subtitle.text,
+                    type: 'artist',
+                    source: 'music_shelf'
+                };
+            }
+        }
+        
+        // Check for topic in channel tagline
+        const taglineShelf = channel.shelves?.find(shelf => 
+            shelf.type === 'ChannelTagline' || 
+            shelf.title?.text?.toLowerCase()?.includes('topic')
+        );
+        
+        if (taglineShelf?.content?.text) {
+            return {
+                title: taglineShelf.content.text,
+                type: 'tagline',
+                source: 'tagline_shelf'
+            };
+        }
+        
+        // Check for topic in channel links
+        const linksShelf = channel.shelves?.find(shelf => 
+            shelf.type === 'ChannelHeaderLinks' || 
+            shelf.title?.text?.toLowerCase()?.includes('link')
+        );
+        
+        if (linksShelf?.content?.links) {
+            const topicLink = linksShelf.content.links.find(link => 
+                link.title?.toLowerCase()?.includes('topic') || 
+                link.title?.toLowerCase()?.includes('artist')
+            );
+            
+            if (topicLink) {
+                return {
+                    title: topicLink.title,
+                    url: topicLink.url,
+                    type: 'link',
+                    source: 'links_shelf'
+                };
+            }
+        }
+        
+        // If no topic found, return null
+        return null;
+    } catch (error) {
+        console.error('Error extracting channel topic:', error);
+        return null;
+    }
+}
 
 // Get video info endpoint
 app.get('/api/video/:videoId', async (req, res) => {
