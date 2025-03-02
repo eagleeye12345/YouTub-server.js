@@ -339,10 +339,63 @@ async function extractTopicFromReleasesParams(channelId, params) {
     }
 }
 
-// Update the findTopicChannelId function to use the releases params
+// Add a function to check if the current channel is already a topic channel
+async function checkIfAlreadyTopicChannel(channelId) {
+    try {
+        console.log(`Checking if channel ${channelId} is already a topic channel`);
+        const channel = await yt.getChannel(channelId);
+        
+        // Check if the channel title contains "- Topic"
+        if (channel.metadata?.title?.includes('- Topic')) {
+            console.log(`Channel is already a topic channel: ${channel.metadata.title}`);
+            return {
+                id: channelId,
+                title: channel.metadata.title,
+                source: 'already_topic_channel'
+            };
+        }
+        
+        // Check if the channel has a releases tab with the same channel ID
+        if (channel.has_releases) {
+            const releasesTab = channel.shelves?.find(shelf => 
+                shelf.type?.includes('Release') || 
+                (shelf.title?.text && shelf.title.text.includes('Release'))
+            );
+            
+            if (releasesTab?.title?.endpoint?.payload?.params) {
+                // Extract the topic channel info from the debug data
+                const topicInfo = {
+                    id: channelId,
+                    title: `${channel.metadata?.title || artistName} - Topic`,
+                    params: releasesTab.title.endpoint.payload.params,
+                    url: releasesTab.title.endpoint.metadata?.url,
+                    type: 'topic_channel',
+                    source: 'releases_shelf_params'
+                };
+                
+                console.log(`Found topic channel info from releases tab: ${JSON.stringify(topicInfo)}`);
+                return topicInfo;
+            }
+        }
+        
+        return null;
+    } catch (error) {
+        console.log(`Error checking if already topic channel: ${error.message}`);
+        return null;
+    }
+}
+
+// Update the findTopicChannelId function to check if the channel is already a topic channel
 async function findTopicChannelId(artistName, channelId) {
     try {
-        // Try direct topic channel ID check first
+        // Check if the channel is already a topic channel
+        const alreadyTopicChannel = await checkIfAlreadyTopicChannel(channelId);
+        if (alreadyTopicChannel) {
+            return alreadyTopicChannel;
+        }
+        
+        // Continue with existing approaches...
+        // Try direct topic channel ID check
         const directTopicChannel = await checkDirectTopicChannelId(artistName, channelId);
         if (directTopicChannel) {
             return directTopicChannel;
@@ -1644,6 +1697,84 @@ app.get('/api/debug/channel/full/:channelId', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// Add a function to find the actual topic channel ID from the releases tab
+async function findActualTopicChannelId(channelId, params) {
+    try {
+        console.log(`Finding actual topic channel ID for channel ${channelId} with params ${params}`);
+        
+        // First try: Check if we can find the topic channel ID in the releases page
+        try {
+            const releasesPage = await yt.browse({
+                browseId: channelId,
+                params: params
+            });
+            
+            // Look for references to the actual topic channel ID in the page
+            // This could be in playlist authors, video authors, etc.
+            const topicChannelId = extractTopicChannelIdFromPage(releasesPage);
+            if (topicChannelId && topicChannelId !== channelId) {
+                console.log(`Found actual topic channel ID: ${topicChannelId}`);
+                return topicChannelId;
+            }
+        } catch (err) {
+            console.log(`Error browsing releases page: ${err.message}`);
+        }
+        
+        // Second try: Use a direct search for the artist name + "- Topic"
+        const channel = await yt.getChannel(channelId);
+        const artistName = channel.metadata?.title?.split(' - Topic')[0] || '';
+        
+        if (artistName) {
+            const searchQuery = `${artistName} - Topic`;
+            console.log(`Searching for topic channel: ${searchQuery}`);
+            
+            const searchResults = await yt.search(searchQuery);
+            const topicChannel = searchResults.channels?.find(channel => 
+                channel.name?.toLowerCase().includes('topic') && 
+                channel.name?.toLowerCase().includes(artistName.toLowerCase())
+            );
+            
+            if (topicChannel && topicChannel.id !== channelId) {
+                console.log(`Found topic channel via search: ${topicChannel.name} (${topicChannel.id})`);
+                return topicChannel.id;
+            }
+        }
+        
+        // If we can't find the actual topic channel ID, return the original channel ID
+        return channelId;
+    } catch (error) {
+        console.log(`Error finding actual topic channel ID: ${error.message}`);
+        return channelId;
+    }
+}
+
+// Helper function to extract topic channel ID from a page
+function extractTopicChannelIdFromPage(page) {
+    // Check playlists for topic channel references
+    const playlists = page.contents?.flatMap(content => 
+        content.contents?.items?.filter(item => item.type === 'Playlist' || item.type === 'GridPlaylist') || []
+    ) || [];
+    
+    for (const playlist of playlists) {
+        if (playlist.author?.name?.includes('- Topic') && playlist.author.id) {
+            return playlist.author.id;
+        }
+    }
+    
+    // Check videos for topic channel references
+    const videos = page.contents?.flatMap(content => 
+        content.contents?.items?.filter(item => item.type === 'Video' || item.type === 'GridVideo') || []
+    ) || [];
+    
+    for (const video of videos) {
+        if (video.author?.name?.includes('- Topic') && video.author.id) {
+            return video.author.id;
+        }
+    }
+    
+    return null;
+}
 
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
