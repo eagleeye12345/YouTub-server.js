@@ -135,10 +135,62 @@ app.get('/api/debug/channel/:channelId', async (req, res) => {
     }
 });
 
-// Update the extractChannelTopic function to also look in releases tab
+// Update the extractChannelTopic function to look for TopicChannelDetails
 function extractChannelTopic(channel) {
     try {
-        // Look for topic in various possible locations
+        // First, check if there's a TopicChannelDetails node anywhere in the channel data
+        // This is the most direct way to get topic information
+        
+        // Check in header components
+        if (channel.header?.contents) {
+            for (const content of channel.header.contents) {
+                if (content.type === 'TopicChannelDetails') {
+                    console.log('Found TopicChannelDetails in header:', content);
+                    return {
+                        title: content.title?.text || '',
+                        id: content.endpoint?.payload?.browseId || null,
+                        url: content.endpoint?.metadata?.url || null,
+                        type: 'topic_channel',
+                        source: 'topic_channel_details'
+                    };
+                }
+            }
+        }
+        
+        // Check in shelves for TopicChannelDetails
+        if (channel.shelves) {
+            for (const shelf of channel.shelves) {
+                // Check if the shelf itself is a TopicChannelDetails
+                if (shelf.type === 'TopicChannelDetails') {
+                    console.log('Found TopicChannelDetails in shelf:', shelf);
+                    return {
+                        title: shelf.title?.text || '',
+                        id: shelf.endpoint?.payload?.browseId || null,
+                        url: shelf.endpoint?.metadata?.url || null,
+                        type: 'topic_channel',
+                        source: 'topic_channel_details_shelf'
+                    };
+                }
+                
+                // Check if any items in the shelf are TopicChannelDetails
+                if (shelf.content?.items) {
+                    for (const item of shelf.content.items) {
+                        if (item.type === 'TopicChannelDetails') {
+                            console.log('Found TopicChannelDetails in shelf item:', item);
+                            return {
+                                title: item.title?.text || '',
+                                id: item.endpoint?.payload?.browseId || null,
+                                url: item.endpoint?.metadata?.url || null,
+                                type: 'topic_channel',
+                                source: 'topic_channel_details_item'
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Continue with existing checks...
         
         // Check for topic in metadata
         if (channel.metadata?.topic) {
@@ -149,6 +201,8 @@ function extractChannelTopic(channel) {
                 source: 'metadata'
             };
         }
+        
+        // Rest of the function remains the same...
         
         // Check for artist info in header
         if (channel.header?.artist_info) {
@@ -161,22 +215,66 @@ function extractChannelTopic(channel) {
             };
         }
         
-        // Check for releases tab
+        // Check for releases tab - enhanced to look deeper
         const releasesShelf = channel.shelves?.find(shelf => 
             shelf.type?.includes('Release') || 
             (shelf.title?.text && shelf.title.text.includes('Release'))
         );
         
-        if (releasesShelf?.content?.items?.length > 0) {
-            // Try to extract artist info from the first release
-            const firstRelease = releasesShelf.content.items[0];
+        if (releasesShelf) {
+            console.log('Found releases shelf:', JSON.stringify({
+                title: releasesShelf.title?.text,
+                endpoint: releasesShelf.endpoint?.payload,
+                content_type: releasesShelf.content?.type,
+                items_count: releasesShelf.content?.items?.length || 0
+            }, null, 2));
             
-            if (firstRelease.subtitle?.text) {
+            // Try to extract from the shelf endpoint payload
+            if (releasesShelf.endpoint?.payload?.browseId) {
                 return {
-                    title: firstRelease.subtitle.text,
+                    title: releasesShelf.title?.text || 'Music Artist',
+                    id: releasesShelf.endpoint.payload.browseId,
+                    url: releasesShelf.endpoint.metadata?.url || null,
                     type: 'artist',
-                    source: 'releases_shelf'
+                    source: 'releases_shelf_endpoint'
                 };
+            }
+            
+            // Try to extract from the first release item
+            if (releasesShelf.content?.items?.length > 0) {
+                const firstRelease = releasesShelf.content.items[0];
+                
+                // Debug the first release structure
+                console.log('First release item:', JSON.stringify({
+                    title: firstRelease.title?.text,
+                    subtitle: firstRelease.subtitle?.text,
+                    endpoint: firstRelease.endpoint?.payload,
+                    thumbnail: firstRelease.thumbnail?.[0]?.url
+                }, null, 2));
+                
+                // Try to get from subtitle (often contains artist name)
+                if (firstRelease.subtitle?.text) {
+                    // For music releases, the subtitle often has format "Song · Artist"
+                    const parts = firstRelease.subtitle.text.split('·').map(p => p.trim());
+                    const artistName = parts.length > 1 ? parts[1] : firstRelease.subtitle.text;
+                    
+                    return {
+                        title: artistName,
+                        type: 'artist',
+                        source: 'releases_shelf_item_subtitle'
+                    };
+                }
+                
+                // Try to get from endpoint
+                if (firstRelease.endpoint?.payload?.videoId) {
+                    return {
+                        title: firstRelease.title?.text || 'Music Artist',
+                        id: firstRelease.endpoint.payload.videoId,
+                        url: firstRelease.endpoint.metadata?.url || null,
+                        type: 'artist',
+                        source: 'releases_shelf_item_endpoint'
+                    };
+                }
             }
         }
         
@@ -190,11 +288,22 @@ function extractChannelTopic(channel) {
             // Try to extract artist info from the first music item
             const firstMusic = musicShelf.content.items[0];
             
+            // Debug the first music item
+            console.log('First music item:', JSON.stringify({
+                title: firstMusic.title?.text,
+                subtitle: firstMusic.subtitle?.text,
+                endpoint: firstMusic.endpoint?.payload
+            }, null, 2));
+            
             if (firstMusic.subtitle?.text) {
+                // For music videos, the subtitle often has format "Artist · Album"
+                const parts = firstMusic.subtitle.text.split('·').map(p => p.trim());
+                const artistName = parts[0];
+                
                 return {
-                    title: firstMusic.subtitle.text,
+                    title: artistName,
                     type: 'artist',
-                    source: 'music_shelf'
+                    source: 'music_shelf_item_subtitle'
                 };
             }
         }
