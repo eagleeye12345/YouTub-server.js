@@ -19,7 +19,7 @@ let ytMusic = null;
 async function initializeYouTubeMusic() {
     try {
         console.log('Initializing YouTube Music client...');
-        const { Music } = require('youtubei.js');
+        const { Music } = await import('youtubei.js');
         ytMusic = await new Music().init();
         console.log('YouTube Music client initialized successfully');
         return ytMusic;
@@ -33,8 +33,9 @@ async function initializeYouTubeMusic() {
 async function initializeYouTube() {
     try {
         console.log('Initializing YouTube client...');
-        const { Innertube } = require('youtubei.js');
+        const { Innertube } = await import('youtubei.js');
         yt = await new Innertube();
+        ytInitialized = true;
         console.log('YouTube client initialized successfully');
         
         // Also initialize the Music client
