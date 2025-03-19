@@ -68,18 +68,12 @@ app.get('/api/channel/:channelId', async (req, res) => {
         };
 
         // Extract topic channel details if available
-        if (channel.header?.topic_channel_details) {
-            const topicDetails = channel.header.topic_channel_details;
-            channelInfo.topic_details = {
-                title: topicDetails.title?.text || '',
-                subtitle: topicDetails.subtitle?.text || '',
-                avatar: topicDetails.avatar?.[0]?.url || '',
-                endpoint: topicDetails.endpoint?.browse_endpoint?.browse_id || 
-                          topicDetails.endpoint?.navigation_endpoint?.browse_id || ''
-            };
+        const topicDetails = await extractTopicChannelDetails(channel);
+        if (topicDetails) {
+            channelInfo.topic_details = topicDetails;
         }
 
-        // Check for related channels/artists in metadata
+        // Extract related channels/artists in metadata
         if (channel.metadata?.related_channels?.length) {
             channelInfo.related_channels = channel.metadata.related_channels.map(relatedChannel => ({
                 id: relatedChannel.id || relatedChannel.channel_id || '',
@@ -300,7 +294,7 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
         const channel = await yt.getChannel(req.params.channelId);
         
         // Extract topic channel details if available
-        const topicDetails = extractTopicChannelDetails(channel);
+        const topicDetails = await extractTopicChannelDetails(channel);
         
         // Get videos/shorts tab
         const videosTab = type === 'shorts' ? 
@@ -771,9 +765,9 @@ app.get('/api/topic/:topicId', async (req, res) => {
     }
 });
 
-// Enhanced helper function to extract topic channel details
-function extractTopicChannelDetails(channel) {
-    // Check various paths where topic channel details might be found
+// Update the extractTopicChannelDetails function to check the Releases tab
+async function extractTopicChannelDetails(channel) {
+    // First try the existing methods
     let topicDetails = null;
     
     // Check in header
@@ -798,32 +792,125 @@ function extractTopicChannelDetails(channel) {
             }
         }
     }
-    // Check in sections
-    else if (channel.sections && Array.isArray(channel.sections)) {
-        // Look through sections for topic information
-        for (const section of channel.sections) {
-            if (section.topic_channel_details) {
-                topicDetails = section.topic_channel_details;
-                break;
+    
+    // If we still don't have topic details, try to access the Releases tab
+    if (!topicDetails) {
+        try {
+            // Try to access the Releases tab
+            const releasesTab = await channel.getTabByName('Releases');
+            if (releasesTab) {
+                console.log('Found Releases tab, checking for topic channel details');
+                
+                // Check if the tab itself has topic_channel_details
+                if (releasesTab.topic_channel_details) {
+                    topicDetails = releasesTab.topic_channel_details;
+                }
+                // Check in the shelves of the Releases tab
+                else if (releasesTab.shelves && releasesTab.shelves.length) {
+                    for (const shelf of releasesTab.shelves) {
+                        // Look for shelves with albums or music
+                        const shelfTitle = shelf.title?.text || '';
+                        if (shelfTitle.toLowerCase().includes('album') || 
+                            shelfTitle.toLowerCase().includes('music') ||
+                            shelfTitle.toLowerCase().includes('single')) {
+                            
+                            // If we find a music-related shelf, check its endpoint
+                            if (shelf.endpoint?.browse_endpoint?.browse_id) {
+                                // This might be a topic channel ID
+                                const potentialTopicId = shelf.endpoint.browse_endpoint.browse_id;
+                                if (potentialTopicId.startsWith('UC') || 
+                                    potentialTopicId.includes('music_channel')) {
+                                    
+                                    return {
+                                        title: `${channel.metadata?.title || ''} - Topic`,
+                                        subtitle: 'Music Artist',
+                                        endpoint: potentialTopicId
+                                    };
+                                }
+                            }
+                            
+                            // Also check the items in the shelf
+                            if (shelf.items && shelf.items.length) {
+                                for (const item of shelf.items) {
+                                    // Albums often have navigation endpoints to the topic channel
+                                    if (item.endpoint?.browse_endpoint?.browse_id) {
+                                        const browseId = item.endpoint.browse_endpoint.browse_id;
+                                        if (browseId.startsWith('UC') || 
+                                            browseId.includes('music_channel')) {
+                                            
+                                            return {
+                                                title: `${channel.metadata?.title || ''} - Topic`,
+                                                subtitle: 'Music Artist',
+                                                endpoint: browseId
+                                            };
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.log(`Error accessing Releases tab: ${error.message}`);
+        }
+    }
+    
+    // If we still don't have topic details, check for music shelves in the main channel
+    if (!topicDetails && channel.shelves && channel.shelves.length) {
+        for (const shelf of channel.shelves) {
+            const shelfTitle = shelf.title?.text || '';
+            if (shelfTitle.toLowerCase().includes('music videos')) {
+                console.log('Found music videos shelf, checking for topic channel details');
+                
+                // This shelf might contain links to the topic channel
+                if (shelf.endpoint?.browse_endpoint?.browse_id) {
+                    const browseId = shelf.endpoint.browse_endpoint.browse_id;
+                    if (browseId.startsWith('UC') || browseId.includes('music_channel')) {
+                        return {
+                            title: `${channel.metadata?.title || ''} - Topic`,
+                            subtitle: 'Music Artist',
+                            endpoint: browseId
+                        };
+                    }
+                }
+                
+                // Check items in the shelf
+                if (shelf.items && shelf.items.length) {
+                    for (const item of shelf.items) {
+                        if (item.endpoint?.browse_endpoint?.browse_id) {
+                            const browseId = item.endpoint.browse_endpoint.browse_id;
+                            if (browseId.startsWith('UC') || browseId.includes('music_channel')) {
+                                return {
+                                    title: `${channel.metadata?.title || ''} - Topic`,
+                                    subtitle: 'Music Artist',
+                                    endpoint: browseId
+                                };
+                            }
+                        }
+                    }
+                }
             }
         }
     }
     
-    if (!topicDetails) {
-        // Try to find any navigation endpoint that might point to a topic channel
-        if (channel.header?.endpoint?.browse_endpoint?.browse_id) {
-            const browseId = channel.header.endpoint.browse_endpoint.browse_id;
-            // Topic channels often start with "UC" or "FEmusic_channel"
-            if (browseId.startsWith('UC') || browseId.includes('music_channel')) {
-                return {
-                    title: channel.metadata?.title || '',
-                    subtitle: 'Topic Channel',
-                    endpoint: browseId
-                };
-            }
+    // If we still don't have topic details but the channel has music_artist_name,
+    // we can try to construct a topic channel ID based on the channel ID
+    if (!topicDetails && channel.metadata?.music_artist_name) {
+        // Many topic channels are derived from the original channel ID
+        const channelId = channel.metadata.external_id;
+        if (channelId && channelId.startsWith('UC')) {
+            // Try a common pattern for topic channels
+            return {
+                title: `${channel.metadata.title} - Topic`,
+                subtitle: 'Music Artist',
+                endpoint: channelId,
+                is_derived: true  // Flag to indicate this is a derived ID
+            };
         }
-        return null;
     }
+    
+    if (!topicDetails) return null;
     
     // Extract the details from the found topic_channel_details
     return {
