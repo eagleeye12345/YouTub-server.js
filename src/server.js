@@ -880,6 +880,138 @@ app.get('/api/debug/channel/:channelId/topic', async (req, res) => {
     }
 });
 
+// Add a new debug endpoint to explore channel tabs
+app.get('/api/debug/channel/:channelId/tabs', async (req, res) => {
+    try {
+        console.log('Exploring tabs for channel:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Get basic channel info
+        const channelInfo = {
+            id: channel.metadata?.external_id || '',
+            title: channel.metadata?.title || '',
+            is_music_artist: !!channel.metadata?.music_artist_name
+        };
+        
+        // Extract tab information
+        const tabsInfo = [];
+        
+        // Check if channel has tabs property and it's an array
+        if (Array.isArray(channel.tabs)) {
+            console.log(`Found ${channel.tabs.length} tabs`);
+            
+            // Process each tab
+            for (const tab of channel.tabs) {
+                const tabInfo = {
+                    title: tab.title || '',
+                    endpoint: tab.endpoint?.browse_endpoint?.browse_id || '',
+                    url: tab.endpoint?.browse_endpoint?.canonical_base_url || '',
+                    type: tab.type || '',
+                    selected: !!tab.selected,
+                    has_topic_details: !!tab.topic_channel_details
+                };
+                
+                // If this tab has topic details, extract them
+                if (tab.topic_channel_details) {
+                    tabInfo.topic_details = {
+                        title: tab.topic_channel_details.title?.text || '',
+                        subtitle: tab.topic_channel_details.subtitle?.text || '',
+                        endpoint: tab.topic_channel_details.endpoint?.browse_endpoint?.browse_id || ''
+                    };
+                }
+                
+                tabsInfo.push(tabInfo);
+            }
+        } else {
+            // Try to access tabs through the getTabByName method
+            try {
+                // Common tab names for music artists
+                const tabNames = ['Home', 'Videos', 'Playlists', 'Community', 'Store', 'Releases', 'Music'];
+                
+                for (const tabName of tabNames) {
+                    try {
+                        const tab = await channel.getTabByName(tabName);
+                        if (tab) {
+                            tabsInfo.push({
+                                title: tabName,
+                                found: true,
+                                has_content: !!tab.page_contents
+                            });
+                            
+                            // If this is a music tab, explore it further
+                            if (tabName === 'Music' || tabName === 'Releases') {
+                                const shelves = tab.shelves || [];
+                                tabsInfo[tabsInfo.length - 1].shelves = shelves.map(shelf => ({
+                                    title: shelf.title?.text || '',
+                                    type: shelf.type || '',
+                                    items_count: shelf.items?.length || 0
+                                }));
+                            }
+                        }
+                    } catch (error) {
+                        console.log(`Error accessing tab ${tabName}: ${error.message}`);
+                    }
+                }
+            } catch (error) {
+                console.log(`Error accessing tabs: ${error.message}`);
+            }
+        }
+        
+        // Try to find music-related content in shelves
+        const musicShelves = [];
+        if (channel.shelves && channel.shelves.length) {
+            for (const shelf of channel.shelves) {
+                const shelfTitle = shelf.title?.text || '';
+                if (shelfTitle.toLowerCase().includes('music') || 
+                    shelfTitle.toLowerCase().includes('album') || 
+                    shelfTitle.toLowerCase().includes('song')) {
+                    
+                    musicShelves.push({
+                        title: shelfTitle,
+                        type: shelf.type,
+                        items_count: shelf.items?.length || 0,
+                        endpoint: shelf.endpoint?.browse_endpoint?.browse_id || ''
+                    });
+                }
+            }
+        }
+        
+        // Try to access the Music tab specifically
+        let musicTab = null;
+        try {
+            const music = await channel.getTabByName('Music');
+            if (music) {
+                musicTab = {
+                    found: true,
+                    shelves: (music.shelves || []).map(shelf => ({
+                        title: shelf.title?.text || '',
+                        type: shelf.type,
+                        items_count: shelf.items?.length || 0
+                    }))
+                };
+            }
+        } catch (error) {
+            console.log(`No Music tab found: ${error.message}`);
+        }
+        
+        // Construct the response
+        const response = {
+            channel: channelInfo,
+            tabs_count: tabsInfo.length,
+            tabs: tabsInfo,
+            music_shelves: musicShelves,
+            music_tab: musicTab,
+            has_music_artist_name: !!channel.metadata?.music_artist_name,
+            music_artist_name: channel.metadata?.music_artist_name || null
+        };
+        
+        res.json(response);
+    } catch (error) {
+        console.error('Tab exploration error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
     app.listen(port, () => {
