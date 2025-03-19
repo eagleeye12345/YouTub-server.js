@@ -771,16 +771,61 @@ app.get('/api/topic/:topicId', async (req, res) => {
     }
 });
 
-// Add this helper function before the endpoints
+// Enhanced helper function to extract topic channel details
 function extractTopicChannelDetails(channel) {
     // Check various paths where topic channel details might be found
-    const topicDetails = 
-        channel.header?.topic_channel_details || 
-        channel.metadata?.topic_channel_details ||
-        channel.header?.content?.topic_channel_details;
+    let topicDetails = null;
     
-    if (!topicDetails) return null;
+    // Check in header
+    if (channel.header?.topic_channel_details) {
+        topicDetails = channel.header.topic_channel_details;
+    }
+    // Check in metadata
+    else if (channel.metadata?.topic_channel_details) {
+        topicDetails = channel.metadata.topic_channel_details;
+    }
+    // Check in header content
+    else if (channel.header?.content?.topic_channel_details) {
+        topicDetails = channel.header.content.topic_channel_details;
+    }
+    // Check in tabs
+    else if (channel.tabs && Array.isArray(channel.tabs)) {
+        // Look through tabs for topic information
+        for (const tab of channel.tabs) {
+            if (tab.topic_channel_details) {
+                topicDetails = tab.topic_channel_details;
+                break;
+            }
+        }
+    }
+    // Check in sections
+    else if (channel.sections && Array.isArray(channel.sections)) {
+        // Look through sections for topic information
+        for (const section of channel.sections) {
+            if (section.topic_channel_details) {
+                topicDetails = section.topic_channel_details;
+                break;
+            }
+        }
+    }
     
+    if (!topicDetails) {
+        // Try to find any navigation endpoint that might point to a topic channel
+        if (channel.header?.endpoint?.browse_endpoint?.browse_id) {
+            const browseId = channel.header.endpoint.browse_endpoint.browse_id;
+            // Topic channels often start with "UC" or "FEmusic_channel"
+            if (browseId.startsWith('UC') || browseId.includes('music_channel')) {
+                return {
+                    title: channel.metadata?.title || '',
+                    subtitle: 'Topic Channel',
+                    endpoint: browseId
+                };
+            }
+        }
+        return null;
+    }
+    
+    // Extract the details from the found topic_channel_details
     return {
         title: topicDetails.title?.text || '',
         subtitle: topicDetails.subtitle?.text || '',
@@ -789,6 +834,51 @@ function extractTopicChannelDetails(channel) {
                  topicDetails.endpoint?.navigation_endpoint?.browse_id || ''
     };
 }
+
+// Add a new debug endpoint to help identify topic channels
+app.get('/api/debug/channel/:channelId/topic', async (req, res) => {
+    try {
+        console.log('Debugging topic channel for:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Extract all possible locations where topic details might be
+        const debug = {
+            channel_id: req.params.channelId,
+            channel_title: channel.metadata?.title || '',
+            has_header_topic: !!channel.header?.topic_channel_details,
+            has_metadata_topic: !!channel.metadata?.topic_channel_details,
+            has_content_topic: !!channel.header?.content?.topic_channel_details,
+            has_tabs: !!channel.tabs,
+            tabs_count: channel.tabs?.length || 0,
+            has_sections: !!channel.sections,
+            sections_count: channel.sections?.length || 0,
+            topic_details: extractTopicChannelDetails(channel),
+            // Include raw data for inspection
+            header_keys: Object.keys(channel.header || {}),
+            metadata_keys: Object.keys(channel.metadata || {})
+        };
+        
+        // If we found topic details, try to fetch that channel too
+        if (debug.topic_details?.endpoint) {
+            try {
+                const topicChannel = await yt.getChannel(debug.topic_details.endpoint);
+                debug.topic_channel = {
+                    id: topicChannel.metadata?.external_id || '',
+                    title: topicChannel.metadata?.title || '',
+                    is_artist: topicChannel.metadata?.is_artist || false,
+                    is_verified: topicChannel.metadata?.is_verified || false
+                };
+            } catch (error) {
+                debug.topic_channel_error = error.message;
+            }
+        }
+        
+        res.json(debug);
+    } catch (error) {
+        console.error('Topic debug error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
