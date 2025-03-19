@@ -1246,6 +1246,276 @@ app.get('/api/debug/music/artist/:channelId', async (req, res) => {
     }
 });
 
+// Add a comprehensive tab explorer endpoint
+app.get('/api/channel/:channelId/explore-tabs', async (req, res) => {
+    try {
+        console.log('Exploring all tabs for channel:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Basic channel info
+        const channelInfo = {
+            id: channel.metadata?.external_id || '',
+            title: channel.metadata?.title || '',
+            is_music_artist: !!channel.metadata?.music_artist_name
+        };
+        
+        // 1. Get tabs using the tabs property (should be an array of strings according to docs)
+        let tabNames = [];
+        if (Array.isArray(channel.tabs)) {
+            console.log(`Channel.tabs contains ${channel.tabs.length} items`);
+            tabNames = channel.tabs;
+        } else {
+            console.log(`Channel.tabs is not an array: ${typeof channel.tabs}`);
+        }
+        
+        // 2. Check tab availability using has_* properties
+        const tabAvailability = {
+            has_videos: channel.has_videos || false,
+            has_shorts: channel.has_shorts || false,
+            has_releases: channel.has_releases || false,
+            has_podcasts: channel.has_podcasts || false,
+            has_playlists: channel.has_playlists || false,
+            has_community: channel.has_community || false,
+            has_channels: channel.has_channels || false,
+            has_about: channel.has_about || false,
+            has_search: channel.has_search || false
+        };
+        
+        // 3. Try to access each tab using direct methods
+        const tabContents = {};
+        const tabMethods = [
+            { name: 'Videos', method: 'getVideos' },
+            { name: 'Shorts', method: 'getShorts' },
+            { name: 'Releases', method: 'getReleases' },
+            { name: 'Podcasts', method: 'getPodcasts' },
+            { name: 'Playlists', method: 'getPlaylists' },
+            { name: 'LiveStreams', method: 'getLiveStreams' }
+        ];
+        
+        for (const tab of tabMethods) {
+            if (typeof channel[tab.method] === 'function') {
+                try {
+                    console.log(`Trying to access ${tab.name} tab via ${tab.method}()`);
+                    const tabData = await channel[tab.method]();
+                    
+                    tabContents[tab.name] = {
+                        accessed: true,
+                        has_videos: tabData.videos?.length > 0,
+                        videos_count: tabData.videos?.length || 0,
+                        has_shelves: tabData.shelves?.length > 0,
+                        shelves_count: tabData.shelves?.length || 0,
+                        has_playlists: tabData.playlists?.length > 0,
+                        playlists_count: tabData.playlists?.length || 0
+                    };
+                    
+                    // If this tab has shelves, extract their titles
+                    if (tabData.shelves?.length > 0) {
+                        tabContents[tab.name].shelf_titles = tabData.shelves.map(shelf => 
+                            shelf.title?.text || 'Untitled Shelf'
+                        );
+                    }
+                } catch (error) {
+                    console.log(`Error accessing ${tab.name} tab: ${error.message}`);
+                    tabContents[tab.name] = {
+                        accessed: false,
+                        error: error.message
+                    };
+                }
+            } else {
+                console.log(`Method ${tab.method} is not available`);
+            }
+        }
+        
+        // 4. Try to access tabs using common URL paths
+        const urlPaths = [
+            { name: 'Home', path: '/featured' },
+            { name: 'Videos', path: '/videos' },
+            { name: 'Shorts', path: '/shorts' },
+            { name: 'Live', path: '/streams' },
+            { name: 'Playlists', path: '/playlists' },
+            { name: 'Community', path: '/community' },
+            { name: 'Channels', path: '/channels' },
+            { name: 'About', path: '/about' },
+            { name: 'Store', path: '/store' },
+            { name: 'Releases', path: '/releases' },
+            { name: 'Music', path: '/music' }
+        ];
+        
+        const urlTabContents = {};
+        for (const urlPath of urlPaths) {
+            try {
+                const fullUrl = `/channel/${channel.metadata.external_id}${urlPath.path}`;
+                console.log(`Checking if tab exists at URL: ${fullUrl}`);
+                
+                // First check if the URL is valid using hasTabWithURL
+                if (channel.hasTabWithURL && channel.hasTabWithURL(urlPath.path)) {
+                    console.log(`Tab exists at URL: ${fullUrl}`);
+                    
+                    // Then try to access the tab
+                    const tabData = await channel.getTabByURL(urlPath.path);
+                    
+                    urlTabContents[urlPath.name] = {
+                        url: urlPath.path,
+                        accessed: true,
+                        has_videos: tabData.videos?.length > 0,
+                        videos_count: tabData.videos?.length || 0,
+                        has_shelves: tabData.shelves?.length > 0,
+                        shelves_count: tabData.shelves?.length || 0,
+                        has_playlists: tabData.playlists?.length > 0,
+                        playlists_count: tabData.playlists?.length || 0
+                    };
+                    
+                    // If this tab has shelves, extract their titles
+                    if (tabData.shelves?.length > 0) {
+                        urlTabContents[urlPath.name].shelf_titles = tabData.shelves.map(shelf => 
+                            shelf.title?.text || 'Untitled Shelf'
+                        );
+                    }
+                } else {
+                    // Try directly accessing the tab even if hasTabWithURL returns false
+                    try {
+                        const tabData = await channel.getTabByURL(urlPath.path);
+                        if (tabData) {
+                            urlTabContents[urlPath.name] = {
+                                url: urlPath.path,
+                                accessed: true,
+                                has_videos: tabData.videos?.length > 0,
+                                videos_count: tabData.videos?.length || 0,
+                                has_shelves: tabData.shelves?.length > 0,
+                                shelves_count: tabData.shelves?.length || 0,
+                                has_playlists: tabData.playlists?.length > 0,
+                                playlists_count: tabData.playlists?.length || 0
+                            };
+                            
+                            // If this tab has shelves, extract their titles
+                            if (tabData.shelves?.length > 0) {
+                                urlTabContents[urlPath.name].shelf_titles = tabData.shelves.map(shelf => 
+                                    shelf.title?.text || 'Untitled Shelf'
+                                );
+                            }
+                        }
+                    } catch (error) {
+                        console.log(`Tab at URL ${urlPath.path} not accessible: ${error.message}`);
+                    }
+                }
+            } catch (error) {
+                console.log(`Error checking tab at URL ${urlPath.path}: ${error.message}`);
+            }
+        }
+        
+        // 5. Try to access tabs by name
+        const namedTabs = [
+            'Home', 'Videos', 'Shorts', 'Live', 'Playlists', 
+            'Community', 'Channels', 'About', 'Store', 'Releases', 'Music'
+        ];
+        
+        const namedTabContents = {};
+        for (const tabName of namedTabs) {
+            try {
+                console.log(`Trying to access tab by name: ${tabName}`);
+                const tabData = await channel.getTabByName(tabName);
+                
+                if (tabData) {
+                    namedTabContents[tabName] = {
+                        accessed: true,
+                        has_videos: tabData.videos?.length > 0,
+                        videos_count: tabData.videos?.length || 0,
+                        has_shelves: tabData.shelves?.length > 0,
+                        shelves_count: tabData.shelves?.length || 0,
+                        has_playlists: tabData.playlists?.length > 0,
+                        playlists_count: tabData.playlists?.length || 0
+                    };
+                    
+                    // If this tab has shelves, extract their titles
+                    if (tabData.shelves?.length > 0) {
+                        namedTabContents[tabName].shelf_titles = tabData.shelves.map(shelf => 
+                            shelf.title?.text || 'Untitled Shelf'
+                        );
+                    }
+                }
+            } catch (error) {
+                console.log(`Error accessing tab by name ${tabName}: ${error.message}`);
+            }
+        }
+        
+        // 6. Look for music-related shelves on any tab
+        const musicShelves = [];
+        
+        // Check main page shelves
+        if (channel.shelves?.length > 0) {
+            for (const shelf of channel.shelves) {
+                const shelfTitle = shelf.title?.text || '';
+                if (shelfTitle.toLowerCase().includes('music') || 
+                    shelfTitle.toLowerCase().includes('album') || 
+                    shelfTitle.toLowerCase().includes('song') ||
+                    shelfTitle.toLowerCase().includes('single')) {
+                    
+                    musicShelves.push({
+                        tab: 'Main',
+                        title: shelfTitle,
+                        items_count: shelf.items?.length || 0
+                    });
+                }
+            }
+        }
+        
+        // Check shelves in each tab we've accessed
+        for (const [tabName, tabData] of Object.entries(tabContents)) {
+            if (tabData.shelf_titles) {
+                for (const shelfTitle of tabData.shelf_titles) {
+                    if (shelfTitle.toLowerCase().includes('music') || 
+                        shelfTitle.toLowerCase().includes('album') || 
+                        shelfTitle.toLowerCase().includes('song') ||
+                        shelfTitle.toLowerCase().includes('single')) {
+                        
+                        musicShelves.push({
+                            tab: tabName,
+                            title: shelfTitle,
+                            source: 'method'
+                        });
+                    }
+                }
+            }
+        }
+        
+        for (const [tabName, tabData] of Object.entries(urlTabContents)) {
+            if (tabData.shelf_titles) {
+                for (const shelfTitle of tabData.shelf_titles) {
+                    if (shelfTitle.toLowerCase().includes('music') || 
+                        shelfTitle.toLowerCase().includes('album') || 
+                        shelfTitle.toLowerCase().includes('song') ||
+                        shelfTitle.toLowerCase().includes('single')) {
+                        
+                        musicShelves.push({
+                            tab: tabName,
+                            title: shelfTitle,
+                            source: 'url'
+                        });
+                    }
+                }
+            }
+        }
+        
+        // Construct the response
+        const response = {
+            channel: channelInfo,
+            tab_names: tabNames,
+            tab_availability: tabAvailability,
+            tab_contents: tabContents,
+            url_tab_contents: urlTabContents,
+            named_tab_contents: namedTabContents,
+            music_shelves: musicShelves,
+            has_music_artist_name: !!channel.metadata?.music_artist_name,
+            music_artist_name: channel.metadata?.music_artist_name || null
+        };
+        
+        res.json(response);
+    } catch (error) {
+        console.error('Tab exploration error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
     app.listen(port, () => {
