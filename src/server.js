@@ -1195,10 +1195,13 @@ async function extractTopicChannelFromPlaylists(channel) {
     }
 }
 
-// Add a debug endpoint to explore the Releases tab in detail
+// Update the debug endpoint to explore the Releases tab with pagination
 app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
     try {
-        console.log('Exploring Releases tab for channel:', req.params.channelId);
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 30;
+        
+        console.log(`Exploring Releases tab for channel: ${req.params.channelId} (page ${page})`);
         const channel = await yt.getChannel(req.params.channelId);
         
         // Basic channel info
@@ -1210,9 +1213,17 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
         // Try to access the Releases tab
         let releasesInfo = null;
         try {
-            const releasesTab = await channel.getTabByName('Releases');
+            let releasesTab = await channel.getTabByName('Releases');
             if (releasesTab) {
                 console.log('Found Releases tab');
+                
+                // Skip to requested page if needed
+                let currentPage = 1;
+                while (currentPage < page && releasesTab?.has_continuation) {
+                    console.log(`Loading page ${currentPage + 1}...`);
+                    releasesTab = await releasesTab.getContinuation();
+                    currentPage++;
+                }
                 
                 // Extract basic tab info
                 releasesInfo = {
@@ -1222,14 +1233,23 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
                     has_shelves: Array.isArray(releasesTab.shelves) && releasesTab.shelves.length > 0,
                     shelves_count: Array.isArray(releasesTab.shelves) ? releasesTab.shelves.length : 0,
                     has_playlists: Array.isArray(releasesTab.playlists) && releasesTab.playlists.length > 0,
-                    playlists_count: Array.isArray(releasesTab.playlists) ? releasesTab.playlists.length : 0
+                    playlists_count: Array.isArray(releasesTab.playlists) ? releasesTab.playlists.length : 0,
+                    has_continuation: releasesTab.has_continuation,
+                    pagination: {
+                        current_page: page,
+                        items_per_page: limit,
+                        has_more: releasesTab.has_continuation
+                    }
                 };
                 
                 // Extract detailed playlist info
                 if (releasesTab.playlists && releasesTab.playlists.length) {
                     releasesInfo.playlists = [];
                     
-                    for (const playlist of releasesTab.playlists) {
+                    // Apply limit to the number of playlists processed
+                    const playlistsToProcess = releasesTab.playlists.slice(0, limit);
+                    
+                    for (const playlist of playlistsToProcess) {
                         const playlistInfo = {
                             title: playlist.title?.text || 'Untitled',
                             type: playlist.type || '',
