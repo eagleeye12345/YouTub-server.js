@@ -1195,7 +1195,7 @@ async function extractTopicChannelFromPlaylists(channel) {
     }
 }
 
-// Update the debug endpoint to explore the Releases tab with pagination
+// Fix the debug endpoint to handle pagination errors in the Releases tab
 app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -1243,28 +1243,18 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
                         });
                     }
                     
-                    // Try to load each page sequentially
+                    // Try to load each page sequentially using getContinuation()
                     let currentPage = 1;
                     while (currentPage < page) {
                         console.log(`Loading page ${currentPage + 1}...`);
                         
-                        // Get continuation data
-                        const nextPageData = await releasesTab.getContinuationData();
-                        if (!nextPageData) {
+                        // Use getContinuation() which returns a new instance of the same class
+                        const nextPage = await releasesTab.getContinuation();
+                        if (!nextPage) {
                             throw new Error(`Failed to load page ${currentPage + 1}`);
                         }
                         
-                        // Create a new tab with the continuation data
-                        releasesTab = new Innertube.TabbedFeed(
-                            releasesTab.actions,
-                            nextPageData,
-                            true
-                        );
-                        
-                        if (!releasesTab || !releasesTab.playlists) {
-                            throw new Error(`No playlists found on page ${currentPage + 1}`);
-                        }
-                        
+                        releasesTab = nextPage;
                         currentPage++;
                     }
                     
