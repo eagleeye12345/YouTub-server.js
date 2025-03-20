@@ -765,7 +765,7 @@ app.get('/api/topic/:topicId', async (req, res) => {
     }
 });
 
-// Update the extractTopicChannelDetails function to check the Releases tab
+// Update the extractTopicChannelDetails function to include the new approach
 async function extractTopicChannelDetails(channel) {
     // First try the existing methods
     let topicDetails = null;
@@ -790,6 +790,14 @@ async function extractTopicChannelDetails(channel) {
                 topicDetails = tab.topic_channel_details;
                 break;
             }
+        }
+    }
+    
+    // If we still don't have topic details, try the new approach with playlists
+    if (!topicDetails) {
+        const playlistTopicDetails = await extractTopicChannelFromPlaylists(channel);
+        if (playlistTopicDetails) {
+            return playlistTopicDetails;
         }
     }
     
@@ -1108,6 +1116,84 @@ app.get('/api/debug/channel/:channelId/tabs', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// Add this function to extract topic channel ID from playlists
+async function extractTopicChannelFromPlaylists(channel) {
+    try {
+        console.log('Attempting to extract topic channel from playlists...');
+        
+        // Try to access the Releases tab
+        const releasesTab = await channel.getTabByName('Releases');
+        if (releasesTab && releasesTab.playlists && releasesTab.playlists.length > 0) {
+            console.log(`Found ${releasesTab.playlists.length} playlists in Releases tab`);
+            
+            // Examine each playlist for topic channel references
+            for (const playlist of releasesTab.playlists) {
+                console.log(`Examining playlist: ${playlist.title?.text || 'Untitled'}`);
+                
+                // Check if the playlist has an endpoint that might be a topic channel
+                if (playlist.endpoint?.browse_endpoint?.browse_id) {
+                    const browseId = playlist.endpoint.browse_endpoint.browse_id;
+                    
+                    // If this looks like a topic channel ID, return it
+                    if (browseId.startsWith('UC') || browseId.includes('music_channel')) {
+                        return {
+                            title: `${channel.metadata?.title || ''} - Topic`,
+                            subtitle: 'Music Artist',
+                            endpoint: browseId,
+                            source: 'releases_playlist'
+                        };
+                    }
+                }
+                
+                // Check if the playlist has a channel_id property
+                if (playlist.channel_id || playlist.author?.id || playlist.author?.channel_id) {
+                    const channelId = playlist.channel_id || playlist.author?.id || playlist.author?.channel_id;
+                    
+                    // If this looks like a topic channel ID, return it
+                    if (channelId.startsWith('UC') || channelId.includes('music_channel')) {
+                        return {
+                            title: `${channel.metadata?.title || ''} - Topic`,
+                            subtitle: 'Music Artist',
+                            endpoint: channelId,
+                            source: 'releases_playlist_channel'
+                        };
+                    }
+                }
+                
+                // If the playlist has a thumbnail, try to fetch the first video
+                if (playlist.first_video_id) {
+                    try {
+                        console.log(`Fetching video info for ${playlist.first_video_id}`);
+                        const videoInfo = await yt.getInfo(playlist.first_video_id);
+                        
+                        // Check if the video has a music topic channel
+                        if (videoInfo.basic_info?.channel_id && 
+                            videoInfo.basic_info?.channel_id !== channel.metadata.external_id) {
+                            
+                            const videoChannelId = videoInfo.basic_info.channel_id;
+                            if (videoChannelId.startsWith('UC') || videoChannelId.includes('music_channel')) {
+                                return {
+                                    title: videoInfo.basic_info?.author || `${channel.metadata?.title || ''} - Topic`,
+                                    subtitle: 'Music Artist',
+                                    endpoint: videoChannelId,
+                                    source: 'video_in_playlist'
+                                };
+                            }
+                        }
+                    } catch (error) {
+                        console.log(`Error fetching video info: ${error.message}`);
+                    }
+                }
+            }
+        }
+        
+        return null;
+    } catch (error) {
+        console.log(`Error in extractTopicChannelFromPlaylists: ${error.message}`);
+        return null;
+    }
+}
 
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
