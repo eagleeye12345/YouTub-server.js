@@ -1213,102 +1213,162 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
         // Try to access the Releases tab
         let releasesInfo = null;
         try {
+            // Get the initial releases tab
             let releasesTab = await channel.getTabByName('Releases');
-            if (releasesTab) {
-                console.log('Found Releases tab');
-                
-                // Skip to requested page if needed
-                let currentPage = 1;
-                while (currentPage < page && releasesTab?.has_continuation) {
-                    console.log(`Loading page ${currentPage + 1}...`);
-                    releasesTab = await releasesTab.getContinuation();
-                    currentPage++;
-                }
-                
-                // Extract basic tab info
-                releasesInfo = {
-                    found: true,
-                    has_content: !!releasesTab.page_contents,
-                    content_type: releasesTab.page_contents?.type || null,
-                    has_shelves: Array.isArray(releasesTab.shelves) && releasesTab.shelves.length > 0,
-                    shelves_count: Array.isArray(releasesTab.shelves) ? releasesTab.shelves.length : 0,
-                    has_playlists: Array.isArray(releasesTab.playlists) && releasesTab.playlists.length > 0,
-                    playlists_count: Array.isArray(releasesTab.playlists) ? releasesTab.playlists.length : 0,
-                    has_continuation: releasesTab.has_continuation,
-                    pagination: {
-                        current_page: page,
-                        items_per_page: limit,
-                        has_more: releasesTab.has_continuation
+            if (!releasesTab) {
+                throw new Error('Releases tab not found');
+            }
+            
+            console.log('Found Releases tab');
+            
+            // If we need a page beyond the first, try to navigate to it
+            if (page > 1) {
+                try {
+                    console.log(`Attempting to load page ${page}...`);
+                    
+                    // Check if continuation is possible
+                    if (!releasesTab.has_continuation) {
+                        return res.json({
+                            channel: channelInfo,
+                            releases: {
+                                found: true,
+                                error: `No more pages available. Requested page ${page} but only page 1 exists.`,
+                                has_continuation: false,
+                                pagination: {
+                                    current_page: 1,
+                                    items_per_page: limit,
+                                    has_more: false
+                                }
+                            }
+                        });
                     }
-                };
-                
-                // Extract detailed playlist info
-                if (releasesTab.playlists && releasesTab.playlists.length) {
-                    releasesInfo.playlists = [];
                     
-                    // Apply limit to the number of playlists processed
-                    const playlistsToProcess = releasesTab.playlists.slice(0, limit);
-                    
-                    for (const playlist of playlistsToProcess) {
-                        const playlistInfo = {
-                            title: playlist.title?.text || 'Untitled',
-                            type: playlist.type || '',
-                            playlist_id: playlist.id || playlist.playlist_id || '',
-                            video_count: playlist.video_count || 0,
-                            thumbnail_url: playlist.thumbnail?.[0]?.url || '',
-                            has_endpoint: !!playlist.endpoint,
-                            endpoint: playlist.endpoint?.browse_endpoint?.browse_id || '',
-                            channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || '',
-                            channel_name: playlist.author?.name || '',
-                            first_video_id: playlist.first_video_id || ''
-                        };
+                    // Try to load each page sequentially
+                    let currentPage = 1;
+                    while (currentPage < page) {
+                        console.log(`Loading page ${currentPage + 1}...`);
                         
-                        // If this playlist has a first video, try to get more info about it
-                        if (playlist.first_video_id) {
-                            try {
-                                const videoInfo = await yt.getInfo(playlist.first_video_id);
-                                playlistInfo.video_info = {
-                                    title: videoInfo.basic_info?.title || '',
-                                    channel_id: videoInfo.basic_info?.channel_id || '',
-                                    channel_name: videoInfo.basic_info?.author || '',
-                                    is_different_channel: videoInfo.basic_info?.channel_id !== channel.metadata.external_id
-                                };
-                            } catch (error) {
-                                playlistInfo.video_info_error = error.message;
+                        // Get continuation data
+                        const nextPageData = await releasesTab.getContinuationData();
+                        if (!nextPageData) {
+                            throw new Error(`Failed to load page ${currentPage + 1}`);
+                        }
+                        
+                        // Create a new tab with the continuation data
+                        releasesTab = new Innertube.TabbedFeed(
+                            releasesTab.actions,
+                            nextPageData,
+                            true
+                        );
+                        
+                        if (!releasesTab || !releasesTab.playlists) {
+                            throw new Error(`No playlists found on page ${currentPage + 1}`);
+                        }
+                        
+                        currentPage++;
+                    }
+                    
+                    console.log(`Successfully loaded page ${page}`);
+                } catch (paginationError) {
+                    console.error(`Pagination error: ${paginationError.message}`);
+                    return res.json({
+                        channel: channelInfo,
+                        releases: {
+                            found: true,
+                            error: `Error loading page ${page}: ${paginationError.message}`,
+                            pagination: {
+                                current_page: 1,
+                                items_per_page: limit,
+                                has_more: false
                             }
                         }
-                        
-                        releasesInfo.playlists.push(playlistInfo);
-                    }
+                    });
                 }
+            }
+            
+            // Extract basic tab info
+            releasesInfo = {
+                found: true,
+                has_content: !!releasesTab.page_contents,
+                content_type: releasesTab.page_contents?.type || null,
+                has_shelves: Array.isArray(releasesTab.shelves) && releasesTab.shelves.length > 0,
+                shelves_count: Array.isArray(releasesTab.shelves) ? releasesTab.shelves.length : 0,
+                has_playlists: Array.isArray(releasesTab.playlists) && releasesTab.playlists.length > 0,
+                playlists_count: Array.isArray(releasesTab.playlists) ? releasesTab.playlists.length : 0,
+                has_continuation: releasesTab.has_continuation,
+                pagination: {
+                    current_page: page,
+                    items_per_page: limit,
+                    has_more: releasesTab.has_continuation
+                }
+            };
+            
+            // Extract detailed playlist info
+            if (releasesTab.playlists && releasesTab.playlists.length) {
+                releasesInfo.playlists = [];
                 
-                // Extract detailed shelf info
-                if (releasesTab.shelves && releasesTab.shelves.length) {
-                    releasesInfo.shelves = [];
+                // Apply limit to the number of playlists processed
+                const playlistsToProcess = releasesTab.playlists.slice(0, limit);
+                
+                for (const playlist of playlistsToProcess) {
+                    const playlistInfo = {
+                        title: playlist.title?.text || 'Untitled',
+                        type: playlist.type || '',
+                        playlist_id: playlist.id || playlist.playlist_id || '',
+                        video_count: playlist.video_count || 0,
+                        thumbnail_url: playlist.thumbnail?.[0]?.url || '',
+                        has_endpoint: !!playlist.endpoint,
+                        endpoint: playlist.endpoint?.browse_endpoint?.browse_id || '',
+                        channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || '',
+                        channel_name: playlist.author?.name || '',
+                        first_video_id: playlist.first_video_id || ''
+                    };
                     
-                    for (const shelf of releasesTab.shelves) {
-                        const shelfInfo = {
-                            title: shelf.title?.text || '',
-                            type: shelf.type || '',
-                            items_count: shelf.items?.length || 0,
-                            has_endpoint: !!shelf.endpoint,
-                            endpoint: shelf.endpoint?.browse_endpoint?.browse_id || ''
-                        };
-                        
-                        // Extract items from the shelf
-                        if (shelf.items && shelf.items.length) {
-                            shelfInfo.items = shelf.items.map(item => ({
-                                title: item.title?.text || '',
-                                type: item.type || '',
-                                has_endpoint: !!item.endpoint,
-                                endpoint: item.endpoint?.browse_endpoint?.browse_id || '',
-                                channel_id: item.channel_id || item.author?.id || item.author?.channel_id || '',
-                                channel_name: item.author?.name || ''
-                            }));
+                    // If this playlist has a first video, try to get more info about it
+                    if (playlist.first_video_id) {
+                        try {
+                            const videoInfo = await yt.getInfo(playlist.first_video_id);
+                            playlistInfo.video_info = {
+                                title: videoInfo.basic_info?.title || '',
+                                channel_id: videoInfo.basic_info?.channel_id || '',
+                                channel_name: videoInfo.basic_info?.author || '',
+                                is_different_channel: videoInfo.basic_info?.channel_id !== channel.metadata.external_id
+                            };
+                        } catch (error) {
+                            playlistInfo.video_info_error = error.message;
                         }
-                        
-                        releasesInfo.shelves.push(shelfInfo);
                     }
+                    
+                    releasesInfo.playlists.push(playlistInfo);
+                }
+            }
+            
+            // Extract detailed shelf info
+            if (releasesTab.shelves && releasesTab.shelves.length) {
+                releasesInfo.shelves = [];
+                
+                for (const shelf of releasesTab.shelves) {
+                    const shelfInfo = {
+                        title: shelf.title?.text || '',
+                        type: shelf.type || '',
+                        items_count: shelf.items?.length || 0,
+                        has_endpoint: !!shelf.endpoint,
+                        endpoint: shelf.endpoint?.browse_endpoint?.browse_id || ''
+                    };
+                    
+                    // Extract items from the shelf
+                    if (shelf.items && shelf.items.length) {
+                        shelfInfo.items = shelf.items.map(item => ({
+                            title: item.title?.text || '',
+                            type: item.type || '',
+                            has_endpoint: !!item.endpoint,
+                            endpoint: item.endpoint?.browse_endpoint?.browse_id || '',
+                            channel_id: item.channel_id || item.author?.id || item.author?.channel_id || '',
+                            channel_name: item.author?.name || ''
+                        }));
+                    }
+                    
+                    releasesInfo.shelves.push(shelfInfo);
                 }
             }
         } catch (error) {
