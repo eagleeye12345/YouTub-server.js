@@ -1195,6 +1195,123 @@ async function extractTopicChannelFromPlaylists(channel) {
     }
 }
 
+// Add a debug endpoint to explore the Releases tab in detail
+app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
+    try {
+        console.log('Exploring Releases tab for channel:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Basic channel info
+        const channelInfo = {
+            id: channel.metadata?.external_id || '',
+            title: channel.metadata?.title || ''
+        };
+        
+        // Try to access the Releases tab
+        let releasesInfo = null;
+        try {
+            const releasesTab = await channel.getTabByName('Releases');
+            if (releasesTab) {
+                console.log('Found Releases tab');
+                
+                // Extract basic tab info
+                releasesInfo = {
+                    found: true,
+                    has_content: !!releasesTab.page_contents,
+                    content_type: releasesTab.page_contents?.type || null,
+                    has_shelves: Array.isArray(releasesTab.shelves) && releasesTab.shelves.length > 0,
+                    shelves_count: Array.isArray(releasesTab.shelves) ? releasesTab.shelves.length : 0,
+                    has_playlists: Array.isArray(releasesTab.playlists) && releasesTab.playlists.length > 0,
+                    playlists_count: Array.isArray(releasesTab.playlists) ? releasesTab.playlists.length : 0
+                };
+                
+                // Extract detailed playlist info
+                if (releasesTab.playlists && releasesTab.playlists.length) {
+                    releasesInfo.playlists = [];
+                    
+                    for (const playlist of releasesTab.playlists) {
+                        const playlistInfo = {
+                            title: playlist.title?.text || 'Untitled',
+                            type: playlist.type || '',
+                            playlist_id: playlist.id || playlist.playlist_id || '',
+                            video_count: playlist.video_count || 0,
+                            thumbnail_url: playlist.thumbnail?.[0]?.url || '',
+                            has_endpoint: !!playlist.endpoint,
+                            endpoint: playlist.endpoint?.browse_endpoint?.browse_id || '',
+                            channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || '',
+                            channel_name: playlist.author?.name || '',
+                            first_video_id: playlist.first_video_id || ''
+                        };
+                        
+                        // If this playlist has a first video, try to get more info about it
+                        if (playlist.first_video_id) {
+                            try {
+                                const videoInfo = await yt.getInfo(playlist.first_video_id);
+                                playlistInfo.video_info = {
+                                    title: videoInfo.basic_info?.title || '',
+                                    channel_id: videoInfo.basic_info?.channel_id || '',
+                                    channel_name: videoInfo.basic_info?.author || '',
+                                    is_different_channel: videoInfo.basic_info?.channel_id !== channel.metadata.external_id
+                                };
+                            } catch (error) {
+                                playlistInfo.video_info_error = error.message;
+                            }
+                        }
+                        
+                        releasesInfo.playlists.push(playlistInfo);
+                    }
+                }
+                
+                // Extract detailed shelf info
+                if (releasesTab.shelves && releasesTab.shelves.length) {
+                    releasesInfo.shelves = [];
+                    
+                    for (const shelf of releasesTab.shelves) {
+                        const shelfInfo = {
+                            title: shelf.title?.text || '',
+                            type: shelf.type || '',
+                            items_count: shelf.items?.length || 0,
+                            has_endpoint: !!shelf.endpoint,
+                            endpoint: shelf.endpoint?.browse_endpoint?.browse_id || ''
+                        };
+                        
+                        // Extract items from the shelf
+                        if (shelf.items && shelf.items.length) {
+                            shelfInfo.items = shelf.items.map(item => ({
+                                title: item.title?.text || '',
+                                type: item.type || '',
+                                has_endpoint: !!item.endpoint,
+                                endpoint: item.endpoint?.browse_endpoint?.browse_id || '',
+                                channel_id: item.channel_id || item.author?.id || item.author?.channel_id || '',
+                                channel_name: item.author?.name || ''
+                            }));
+                        }
+                        
+                        releasesInfo.shelves.push(shelfInfo);
+                    }
+                }
+            }
+        } catch (error) {
+            console.log(`Error accessing Releases tab: ${error.message}`);
+            releasesInfo = {
+                found: false,
+                error: error.message
+            };
+        }
+        
+        // Construct the response
+        const response = {
+            channel: channelInfo,
+            releases: releasesInfo
+        };
+        
+        res.json(response);
+    } catch (error) {
+        console.error('Releases tab exploration error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
     app.listen(port, () => {
