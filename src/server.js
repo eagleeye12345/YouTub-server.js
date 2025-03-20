@@ -1391,6 +1391,164 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
     }
 });
 
+// Update the channel releases endpoint to include pagination info
+app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
+    try {
+        console.log('Fetching releases with videos for channel:', req.params.channelId);
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 30;
+        
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Basic channel info
+        const channelInfo = {
+            id: channel.metadata?.external_id || '',
+            title: channel.metadata?.title || ''
+        };
+        
+        // Try to access the Releases tab
+        let releasesWithVideos = [];
+        let hasMore = false;
+        
+        try {
+            // Get all playlists from releases tab
+            let releasesTab = await channel.getTabByName('Releases');
+            if (!releasesTab) {
+                return res.json({
+                    channel: channelInfo,
+                    releases: [],
+                    pagination: {
+                        has_more: false,
+                        current_page: page,
+                        items_per_page: limit,
+                        total_items: 0
+                    }
+                });
+            }
+            
+            console.log('Found Releases tab');
+            
+            // Collect all playlists for the current page
+            const allPlaylists = [];
+            
+            // Add first page playlists
+            if (releasesTab.playlists && releasesTab.playlists.length) {
+                allPlaylists.push(...releasesTab.playlists);
+                console.log(`Added ${releasesTab.playlists.length} playlists from first page`);
+            }
+            
+            // Fetch continuations until we reach the requested page
+            let currentPage = 1;
+            let continuationTab = releasesTab;
+            
+            while (currentPage < page && continuationTab.has_continuation) {
+                try {
+                    currentPage++;
+                    console.log(`Fetching continuation for page ${currentPage}...`);
+                    
+                    continuationTab = await continuationTab.getContinuation();
+                    
+                    if (continuationTab.playlists && continuationTab.playlists.length) {
+                        if (currentPage === page) {
+                            // This is the page we want
+                            allPlaylists.length = 0; // Clear previous pages
+                            allPlaylists.push(...continuationTab.playlists);
+                            console.log(`Added ${continuationTab.playlists.length} playlists from page ${currentPage}`);
+                        }
+                    } else {
+                        console.log('No more playlists found in continuation');
+                        break;
+                    }
+                } catch (error) {
+                    console.error(`Error fetching continuation for page ${currentPage}: ${error.message}`);
+                    break;
+                }
+            }
+            
+            // Check if there are more pages
+            hasMore = continuationTab.has_continuation;
+            
+            // Take only the requested number of playlists
+            const playlistsForPage = allPlaylists.slice(0, limit);
+            console.log(`Processing ${playlistsForPage.length} playlists for page ${page}`);
+            
+            // Process each playlist to get its videos
+            for (const playlist of playlistsForPage) {
+                try {
+                    const playlistId = playlist.id || playlist.playlist_id || '';
+                    if (!playlistId) {
+                        console.log('Skipping playlist with no ID');
+                        continue;
+                    }
+                    
+                    console.log(`Fetching videos for playlist: ${playlistId} (${playlist.title?.text || 'Untitled'})`);
+                    
+                    // Get playlist details
+                    const playlistDetails = await yt.getPlaylist(playlistId);
+                    
+                    const releaseInfo = {
+                        playlist_id: playlistId,
+                        title: playlist.title?.text || 'Untitled',
+                        type: playlist.type || 'Album',
+                        thumbnail_url: playlist.thumbnail?.[0]?.url || '',
+                        channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || channelInfo.id,
+                        channel_name: playlist.author?.name || channelInfo.title,
+                        videos_count: playlistDetails.videos?.length || 0,
+                        videos: []
+                    };
+                    
+                    // Process videos in the playlist
+                    if (playlistDetails.videos && playlistDetails.videos.length) {
+                        for (const video of playlistDetails.videos) {
+                            try {
+                                const videoData = {
+                                    video_id: video.id,
+                                    title: video.title?.text || '',
+                                    thumbnail_url: video.thumbnail?.[0]?.url || getCleanThumbnailUrl(video.id),
+                                    duration: video.duration?.text || '',
+                                    channel_id: video.author?.id || releaseInfo.channel_id,
+                                    channel_name: video.author?.name || releaseInfo.channel_name,
+                                    playlist_id: playlistId,
+                                    album_title: releaseInfo.title,
+                                    album_type: releaseInfo.type
+                                };
+                                
+                                releaseInfo.videos.push(videoData);
+                            } catch (error) {
+                                console.error(`Error processing video in playlist: ${error.message}`);
+                            }
+                        }
+                    }
+                    
+                    releasesWithVideos.push(releaseInfo);
+                } catch (error) {
+                    console.error(`Error processing playlist: ${error.message}`);
+                }
+            }
+            
+        } catch (error) {
+            console.error(`Error accessing Releases tab: ${error.message}`);
+        }
+        
+        // Construct the response
+        const response = {
+            channel: channelInfo,
+            releases: releasesWithVideos,
+            pagination: {
+                has_more: hasMore,
+                current_page: page,
+                items_per_page: limit,
+                total_items: releasesWithVideos.length
+            }
+        };
+        
+        res.json(response);
+    } catch (error) {
+        console.error('Error fetching releases with videos:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
     app.listen(port, () => {
