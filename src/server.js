@@ -1195,14 +1195,16 @@ async function extractTopicChannelFromPlaylists(channel) {
     }
 }
 
-// Fix the debug endpoint to handle pagination errors in the Releases tab
+// Update the releases debug endpoint to handle pagination
 app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
     try {
+        console.log('Exploring Releases tab for channel:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Get pagination parameters
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 30;
-        
-        console.log(`Exploring Releases tab for channel: ${req.params.channelId} (page ${page})`);
-        const channel = await yt.getChannel(req.params.channelId);
+        const fetchAll = req.query.all === 'true';
         
         // Basic channel info
         const channelInfo = {
@@ -1213,152 +1215,130 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
         // Try to access the Releases tab
         let releasesInfo = null;
         try {
-            // Get the initial releases tab
             let releasesTab = await channel.getTabByName('Releases');
-            if (!releasesTab) {
-                throw new Error('Releases tab not found');
-            }
-            
-            console.log('Found Releases tab');
-            
-            // If we need a page beyond the first, try to navigate to it
-            if (page > 1) {
-                try {
-                    console.log(`Attempting to load page ${page}...`);
+            if (releasesTab) {
+                console.log('Found Releases tab');
+                
+                // If we need to fetch a specific page
+                let currentPage = 1;
+                while (currentPage < page && releasesTab.has_continuation) {
+                    console.log(`Fetching continuation for page ${currentPage}...`);
+                    releasesTab = await releasesTab.getContinuation();
+                    currentPage++;
+                }
+                
+                // Extract basic tab info
+                releasesInfo = {
+                    found: true,
+                    has_content: !!releasesTab.page_contents,
+                    content_type: releasesTab.page_contents?.type || null,
+                    has_shelves: Array.isArray(releasesTab.shelves) && releasesTab.shelves.length > 0,
+                    shelves_count: Array.isArray(releasesTab.shelves) ? releasesTab.shelves.length : 0,
+                    has_playlists: Array.isArray(releasesTab.playlists) && releasesTab.playlists.length > 0,
+                    playlists_count: Array.isArray(releasesTab.playlists) ? releasesTab.playlists.length : 0,
+                    has_continuation: releasesTab.has_continuation,
+                    current_page: page
+                };
+                
+                // Collect all playlists if requested
+                const allPlaylists = [];
+                
+                // Process current page playlists
+                if (releasesTab.playlists && releasesTab.playlists.length) {
+                    // Use the current page's playlists
+                    allPlaylists.push(...releasesTab.playlists);
                     
-                    // Check if continuation is possible
-                    if (!releasesTab.has_continuation) {
-                        return res.json({
-                            channel: channelInfo,
-                            releases: {
-                                found: true,
-                                error: `No more pages available. Requested page ${page} but only page 1 exists.`,
-                                has_continuation: false,
-                                pagination: {
-                                    current_page: 1,
-                                    items_per_page: limit,
-                                    has_more: false
+                    // If we need to fetch all playlists
+                    if (fetchAll) {
+                        let continuationTab = releasesTab;
+                        let continuationPage = page;
+                        
+                        // Keep fetching continuations until there are no more
+                        while (continuationTab.has_continuation) {
+                            console.log(`Fetching additional playlists page ${++continuationPage}...`);
+                            continuationTab = await continuationTab.getContinuation();
+                            
+                            if (continuationTab.playlists && continuationTab.playlists.length) {
+                                allPlaylists.push(...continuationTab.playlists);
+                                console.log(`Added ${continuationTab.playlists.length} more playlists, total: ${allPlaylists.length}`);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Update the count to reflect the total number of playlists found
+                    releasesInfo.total_playlists_found = allPlaylists.length;
+                    
+                    // Process playlists (limit to the requested number unless fetching all)
+                    const playlistsToProcess = fetchAll ? allPlaylists : allPlaylists.slice(0, limit);
+                    releasesInfo.playlists = [];
+                    
+                    for (const playlist of playlistsToProcess) {
+                        const playlistInfo = {
+                            title: playlist.title?.text || 'Untitled',
+                            type: playlist.type || '',
+                            playlist_id: playlist.id || playlist.playlist_id || '',
+                            video_count: playlist.video_count || 0,
+                            thumbnail_url: playlist.thumbnail?.[0]?.url || '',
+                            has_endpoint: !!playlist.endpoint,
+                            endpoint: playlist.endpoint?.browse_endpoint?.browse_id || '',
+                            channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || '',
+                            channel_name: playlist.author?.name || '',
+                            first_video_id: playlist.first_video_id || ''
+                        };
+                        
+                        // If this playlist has a first video, try to get more info about it
+                        if (playlist.first_video_id) {
+                            try {
+                                const videoInfo = await yt.getInfo(playlist.first_video_id);
+                                playlistInfo.video_info = {
+                                    title: videoInfo.basic_info?.title || '',
+                                    channel_id: videoInfo.basic_info?.channel_id || '',
+                                    channel_name: videoInfo.basic_info?.author || '',
+                                    is_different_channel: videoInfo.basic_info?.channel_id !== channel.metadata.external_id
+                                };
+                                
+                                // If this video has a different channel ID, it might be the topic channel
+                                if (playlistInfo.video_info.is_different_channel) {
+                                    console.log(`Found potential topic channel: ${playlistInfo.video_info.channel_id}`);
                                 }
-                            }
-                        });
-                    }
-                    
-                    // Try to load each page sequentially using getContinuation()
-                    let currentPage = 1;
-                    while (currentPage < page) {
-                        console.log(`Loading page ${currentPage + 1}...`);
-                        
-                        // Use getContinuation() which returns a new instance of the same class
-                        const nextPage = await releasesTab.getContinuation();
-                        if (!nextPage) {
-                            throw new Error(`Failed to load page ${currentPage + 1}`);
-                        }
-                        
-                        releasesTab = nextPage;
-                        currentPage++;
-                    }
-                    
-                    console.log(`Successfully loaded page ${page}`);
-                } catch (paginationError) {
-                    console.error(`Pagination error: ${paginationError.message}`);
-                    return res.json({
-                        channel: channelInfo,
-                        releases: {
-                            found: true,
-                            error: `Error loading page ${page}: ${paginationError.message}`,
-                            pagination: {
-                                current_page: 1,
-                                items_per_page: limit,
-                                has_more: false
+                            } catch (error) {
+                                playlistInfo.video_info_error = error.message;
                             }
                         }
-                    });
+                        
+                        releasesInfo.playlists.push(playlistInfo);
+                    }
                 }
-            }
-            
-            // Extract basic tab info
-            releasesInfo = {
-                found: true,
-                has_content: !!releasesTab.page_contents,
-                content_type: releasesTab.page_contents?.type || null,
-                has_shelves: Array.isArray(releasesTab.shelves) && releasesTab.shelves.length > 0,
-                shelves_count: Array.isArray(releasesTab.shelves) ? releasesTab.shelves.length : 0,
-                has_playlists: Array.isArray(releasesTab.playlists) && releasesTab.playlists.length > 0,
-                playlists_count: Array.isArray(releasesTab.playlists) ? releasesTab.playlists.length : 0,
-                has_continuation: releasesTab.has_continuation,
-                pagination: {
-                    current_page: page,
-                    items_per_page: limit,
-                    has_more: releasesTab.has_continuation
-                }
-            };
-            
-            // Extract detailed playlist info
-            if (releasesTab.playlists && releasesTab.playlists.length) {
-                releasesInfo.playlists = [];
                 
-                // Apply limit to the number of playlists processed
-                const playlistsToProcess = releasesTab.playlists.slice(0, limit);
-                
-                for (const playlist of playlistsToProcess) {
-                    const playlistInfo = {
-                        title: playlist.title?.text || 'Untitled',
-                        type: playlist.type || '',
-                        playlist_id: playlist.id || playlist.playlist_id || '',
-                        video_count: playlist.video_count || 0,
-                        thumbnail_url: playlist.thumbnail?.[0]?.url || '',
-                        has_endpoint: !!playlist.endpoint,
-                        endpoint: playlist.endpoint?.browse_endpoint?.browse_id || '',
-                        channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || '',
-                        channel_name: playlist.author?.name || '',
-                        first_video_id: playlist.first_video_id || ''
-                    };
+                // Extract detailed shelf info
+                if (releasesTab.shelves && releasesTab.shelves.length) {
+                    releasesInfo.shelves = [];
                     
-                    // If this playlist has a first video, try to get more info about it
-                    if (playlist.first_video_id) {
-                        try {
-                            const videoInfo = await yt.getInfo(playlist.first_video_id);
-                            playlistInfo.video_info = {
-                                title: videoInfo.basic_info?.title || '',
-                                channel_id: videoInfo.basic_info?.channel_id || '',
-                                channel_name: videoInfo.basic_info?.author || '',
-                                is_different_channel: videoInfo.basic_info?.channel_id !== channel.metadata.external_id
-                            };
-                        } catch (error) {
-                            playlistInfo.video_info_error = error.message;
+                    for (const shelf of releasesTab.shelves) {
+                        const shelfInfo = {
+                            title: shelf.title?.text || '',
+                            type: shelf.type || '',
+                            items_count: shelf.items?.length || 0,
+                            has_endpoint: !!shelf.endpoint,
+                            endpoint: shelf.endpoint?.browse_endpoint?.browse_id || ''
+                        };
+                        
+                        // Extract items from the shelf
+                        if (shelf.items && shelf.items.length) {
+                            shelfInfo.items = shelf.items.map(item => ({
+                                title: item.title?.text || '',
+                                type: item.type || '',
+                                has_endpoint: !!item.endpoint,
+                                endpoint: item.endpoint?.browse_endpoint?.browse_id || '',
+                                channel_id: item.channel_id || item.author?.id || item.author?.channel_id || '',
+                                channel_name: item.author?.name || ''
+                            }));
                         }
+                        
+                        releasesInfo.shelves.push(shelfInfo);
                     }
-                    
-                    releasesInfo.playlists.push(playlistInfo);
-                }
-            }
-            
-            // Extract detailed shelf info
-            if (releasesTab.shelves && releasesTab.shelves.length) {
-                releasesInfo.shelves = [];
-                
-                for (const shelf of releasesTab.shelves) {
-                    const shelfInfo = {
-                        title: shelf.title?.text || '',
-                        type: shelf.type || '',
-                        items_count: shelf.items?.length || 0,
-                        has_endpoint: !!shelf.endpoint,
-                        endpoint: shelf.endpoint?.browse_endpoint?.browse_id || ''
-                    };
-                    
-                    // Extract items from the shelf
-                    if (shelf.items && shelf.items.length) {
-                        shelfInfo.items = shelf.items.map(item => ({
-                            title: item.title?.text || '',
-                            type: item.type || '',
-                            has_endpoint: !!item.endpoint,
-                            endpoint: item.endpoint?.browse_endpoint?.browse_id || '',
-                            channel_id: item.channel_id || item.author?.id || item.author?.channel_id || '',
-                            channel_name: item.author?.name || ''
-                        }));
-                    }
-                    
-                    releasesInfo.shelves.push(shelfInfo);
                 }
             }
         } catch (error) {
@@ -1372,7 +1352,12 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
         // Construct the response
         const response = {
             channel: channelInfo,
-            releases: releasesInfo
+            releases: releasesInfo,
+            pagination: {
+                current_page: page,
+                items_per_page: limit,
+                fetch_all: fetchAll
+            }
         };
         
         res.json(response);
