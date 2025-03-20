@@ -1195,7 +1195,7 @@ async function extractTopicChannelFromPlaylists(channel) {
     }
 }
 
-// Update the releases debug endpoint to handle pagination
+// Update the releases debug endpoint to handle pagination more reliably
 app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
     try {
         console.log('Exploring Releases tab for channel:', req.params.channelId);
@@ -1215,16 +1215,43 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
         // Try to access the Releases tab
         let releasesInfo = null;
         try {
+            // Always start with page 1
             let releasesTab = await channel.getTabByName('Releases');
             if (releasesTab) {
                 console.log('Found Releases tab');
                 
-                // If we need to fetch a specific page
+                // Collect all playlists
+                const allPlaylists = [];
+                
+                // Add first page playlists
+                if (releasesTab.playlists && releasesTab.playlists.length) {
+                    allPlaylists.push(...releasesTab.playlists);
+                    console.log(`Added ${releasesTab.playlists.length} playlists from first page`);
+                }
+                
+                // If we need more pages (either for fetchAll or to reach the requested page)
                 let currentPage = 1;
-                while (currentPage < page && releasesTab.has_continuation) {
-                    console.log(`Fetching continuation for page ${currentPage}...`);
-                    releasesTab = await releasesTab.getContinuation();
-                    currentPage++;
+                let continuationTab = releasesTab;
+                
+                while (continuationTab.has_continuation && 
+                      (fetchAll || currentPage < page)) {
+                    try {
+                        currentPage++;
+                        console.log(`Fetching continuation for page ${currentPage}...`);
+                        
+                        continuationTab = await continuationTab.getContinuation();
+                        
+                        if (continuationTab.playlists && continuationTab.playlists.length) {
+                            allPlaylists.push(...continuationTab.playlists);
+                            console.log(`Added ${continuationTab.playlists.length} more playlists, total: ${allPlaylists.length}`);
+                        } else {
+                            console.log('No more playlists found in continuation');
+                            break;
+                        }
+                    } catch (error) {
+                        console.error(`Error fetching continuation for page ${currentPage}: ${error.message}`);
+                        break;
+                    }
                 }
                 
                 // Extract basic tab info
@@ -1234,82 +1261,77 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
                     content_type: releasesTab.page_contents?.type || null,
                     has_shelves: Array.isArray(releasesTab.shelves) && releasesTab.shelves.length > 0,
                     shelves_count: Array.isArray(releasesTab.shelves) ? releasesTab.shelves.length : 0,
-                    has_playlists: Array.isArray(releasesTab.playlists) && releasesTab.playlists.length > 0,
-                    playlists_count: Array.isArray(releasesTab.playlists) ? releasesTab.playlists.length : 0,
-                    has_continuation: releasesTab.has_continuation,
-                    current_page: page
+                    has_playlists: allPlaylists.length > 0,
+                    playlists_count: allPlaylists.length,
+                    has_continuation: continuationTab.has_continuation,
+                    total_pages_fetched: currentPage
                 };
                 
-                // Collect all playlists if requested
-                const allPlaylists = [];
+                // Calculate which playlists to include in the response
+                let playlistsToProcess = [];
                 
-                // Process current page playlists
-                if (releasesTab.playlists && releasesTab.playlists.length) {
-                    // Use the current page's playlists
-                    allPlaylists.push(...releasesTab.playlists);
+                if (fetchAll) {
+                    // Include all playlists
+                    playlistsToProcess = allPlaylists;
+                } else {
+                    // Calculate the start and end indices for the requested page
+                    const startIndex = (page - 1) * limit;
+                    const endIndex = startIndex + limit;
                     
-                    // If we need to fetch all playlists
-                    if (fetchAll) {
-                        let continuationTab = releasesTab;
-                        let continuationPage = page;
-                        
-                        // Keep fetching continuations until there are no more
-                        while (continuationTab.has_continuation) {
-                            console.log(`Fetching additional playlists page ${++continuationPage}...`);
-                            continuationTab = await continuationTab.getContinuation();
+                    // Check if we have enough playlists
+                    if (startIndex >= allPlaylists.length) {
+                        // Requested page is beyond available data
+                        playlistsToProcess = [];
+                    } else {
+                        // Get the playlists for the requested page
+                        playlistsToProcess = allPlaylists.slice(startIndex, endIndex);
+                    }
+                }
+                
+                // Update the count to reflect the total number of playlists found
+                releasesInfo.total_playlists_found = allPlaylists.length;
+                releasesInfo.playlists_in_response = playlistsToProcess.length;
+                
+                // Process the selected playlists
+                releasesInfo.playlists = [];
+                
+                for (const playlist of playlistsToProcess) {
+                    const playlistInfo = {
+                        title: playlist.title?.text || 'Untitled',
+                        type: playlist.type || '',
+                        playlist_id: playlist.id || playlist.playlist_id || '',
+                        video_count: playlist.video_count || 0,
+                        thumbnail_url: playlist.thumbnail?.[0]?.url || '',
+                        has_endpoint: !!playlist.endpoint,
+                        endpoint: playlist.endpoint?.browse_endpoint?.browse_id || '',
+                        channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || '',
+                        channel_name: playlist.author?.name || '',
+                        first_video_id: playlist.first_video_id || ''
+                    };
+                    
+                    // If this playlist has a first video, try to get more info about it
+                    if (playlist.first_video_id && (fetchAll || page === 1)) {
+                        // Only fetch video info for the first page or when fetching all
+                        // to avoid too many API calls
+                        try {
+                            const videoInfo = await yt.getInfo(playlist.first_video_id);
+                            playlistInfo.video_info = {
+                                title: videoInfo.basic_info?.title || '',
+                                channel_id: videoInfo.basic_info?.channel_id || '',
+                                channel_name: videoInfo.basic_info?.author || '',
+                                is_different_channel: videoInfo.basic_info?.channel_id !== channel.metadata.external_id
+                            };
                             
-                            if (continuationTab.playlists && continuationTab.playlists.length) {
-                                allPlaylists.push(...continuationTab.playlists);
-                                console.log(`Added ${continuationTab.playlists.length} more playlists, total: ${allPlaylists.length}`);
-                            } else {
-                                break;
+                            // If this video has a different channel ID, it might be the topic channel
+                            if (playlistInfo.video_info.is_different_channel) {
+                                console.log(`Found potential topic channel: ${playlistInfo.video_info.channel_id}`);
                             }
+                        } catch (error) {
+                            playlistInfo.video_info_error = error.message;
                         }
                     }
                     
-                    // Update the count to reflect the total number of playlists found
-                    releasesInfo.total_playlists_found = allPlaylists.length;
-                    
-                    // Process playlists (limit to the requested number unless fetching all)
-                    const playlistsToProcess = fetchAll ? allPlaylists : allPlaylists.slice(0, limit);
-                    releasesInfo.playlists = [];
-                    
-                    for (const playlist of playlistsToProcess) {
-                        const playlistInfo = {
-                            title: playlist.title?.text || 'Untitled',
-                            type: playlist.type || '',
-                            playlist_id: playlist.id || playlist.playlist_id || '',
-                            video_count: playlist.video_count || 0,
-                            thumbnail_url: playlist.thumbnail?.[0]?.url || '',
-                            has_endpoint: !!playlist.endpoint,
-                            endpoint: playlist.endpoint?.browse_endpoint?.browse_id || '',
-                            channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || '',
-                            channel_name: playlist.author?.name || '',
-                            first_video_id: playlist.first_video_id || ''
-                        };
-                        
-                        // If this playlist has a first video, try to get more info about it
-                        if (playlist.first_video_id) {
-                            try {
-                                const videoInfo = await yt.getInfo(playlist.first_video_id);
-                                playlistInfo.video_info = {
-                                    title: videoInfo.basic_info?.title || '',
-                                    channel_id: videoInfo.basic_info?.channel_id || '',
-                                    channel_name: videoInfo.basic_info?.author || '',
-                                    is_different_channel: videoInfo.basic_info?.channel_id !== channel.metadata.external_id
-                                };
-                                
-                                // If this video has a different channel ID, it might be the topic channel
-                                if (playlistInfo.video_info.is_different_channel) {
-                                    console.log(`Found potential topic channel: ${playlistInfo.video_info.channel_id}`);
-                                }
-                            } catch (error) {
-                                playlistInfo.video_info_error = error.message;
-                            }
-                        }
-                        
-                        releasesInfo.playlists.push(playlistInfo);
-                    }
+                    releasesInfo.playlists.push(playlistInfo);
                 }
                 
                 // Extract detailed shelf info
@@ -1356,7 +1378,9 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
             pagination: {
                 current_page: page,
                 items_per_page: limit,
-                fetch_all: fetchAll
+                fetch_all: fetchAll,
+                total_items: releasesInfo?.total_playlists_found || 0,
+                total_pages: Math.ceil((releasesInfo?.total_playlists_found || 0) / limit)
             }
         };
         
