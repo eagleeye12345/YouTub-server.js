@@ -19,17 +19,22 @@ let ytMusic = null;
 async function initializeYouTubeMusic() {
     try {
         console.log('Initializing YouTube Music client...');
-        const { Music } = await import('youtubei.js');
-        ytMusic = await new Music().init();
+        // Import the YTMusic namespace instead of trying to use Music directly
+        const { default: YouTube } = await import('youtubei.js');
+        
+        // Access the Music class from the YTMusic namespace
+        ytMusic = await new YouTube.YTMusic.Music().init();
         console.log('YouTube Music client initialized successfully');
         return ytMusic;
     } catch (error) {
         console.error('Failed to initialize YouTube Music client:', error);
-        throw error;
+        // Don't throw the error, just log it and continue
+        // This way the server can still run without the Music client
+        return null;
     }
 }
 
-// Update the initializeYouTube function to also initialize the Music client
+// Update the YouTube client initialization to make Music client optional
 async function initializeYouTube() {
     try {
         console.log('Initializing YouTube client...');
@@ -38,8 +43,12 @@ async function initializeYouTube() {
         ytInitialized = true;
         console.log('YouTube client initialized successfully');
         
-        // Also initialize the Music client
-        await initializeYouTubeMusic();
+        // Try to initialize the Music client, but don't fail if it doesn't work
+        try {
+            await initializeYouTubeMusic();
+        } catch (error) {
+            console.log('Music client initialization failed, continuing without it');
+        }
         
         return yt;
     } catch (error) {
