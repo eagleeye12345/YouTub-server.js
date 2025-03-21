@@ -1391,7 +1391,7 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
     }
 });
 
-// Update the channel releases endpoint to include pagination info
+// Update the channel releases endpoint to include release dates
 app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
     try {
         console.log('Fetching releases with videos for channel:', req.params.channelId);
@@ -1486,6 +1486,39 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
                     // Get playlist details
                     const playlistDetails = await yt.getPlaylist(playlistId);
                     
+                    // Extract release date from playlist details
+                    let releaseDate = null;
+                    
+                    // Try to find release date in various locations
+                    if (playlistDetails.metadata?.description_snippet?.text) {
+                        // Sometimes release date is in the description
+                        const dateMatch = playlistDetails.metadata.description_snippet.text.match(/Released on: (\d{4}-\d{2}-\d{2})/i);
+                        if (dateMatch) {
+                            releaseDate = dateMatch[1];
+                        }
+                    }
+                    
+                    // Try to find in metadata
+                    if (!releaseDate && playlistDetails.metadata?.publish_date) {
+                        releaseDate = playlistDetails.metadata.publish_date;
+                    }
+                    
+                    // Try to find in header
+                    if (!releaseDate && playlistDetails.header?.publish_date) {
+                        releaseDate = playlistDetails.header.publish_date;
+                    }
+                    
+                    // Try to find in description
+                    if (!releaseDate && playlistDetails.description?.text) {
+                        const dateMatch = playlistDetails.description.text.match(/Released on: (\d{4}-\d{2}-\d{2})/i);
+                        if (dateMatch) {
+                            releaseDate = dateMatch[1];
+                        }
+                    }
+                    
+                    // Log the raw playlist details for debugging
+                    console.log('Playlist metadata:', JSON.stringify(playlistDetails.metadata || {}, null, 2));
+                    
                     const releaseInfo = {
                         playlist_id: playlistId,
                         title: playlist.title?.text || 'Untitled',
@@ -1494,6 +1527,8 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
                         channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || channelInfo.id,
                         channel_name: playlist.author?.name || channelInfo.title,
                         videos_count: playlistDetails.videos?.length || 0,
+                        release_date: releaseDate,
+                        raw_metadata: playlistDetails.metadata || {},  // Include raw metadata for debugging
                         videos: []
                     };
                     
