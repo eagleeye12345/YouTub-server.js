@@ -1527,10 +1527,10 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
                             for (const pattern of datePatterns) {
                                 const match = text.match(pattern);
                                 if (match) {
-                                    if (pattern.toString().includes('\\d{4}[\/\\-\.']')) {
+                                    if (pattern.toString().includes('\\d{4}[\\/\\-\\.]')) {
                                         // YYYY/MM/DD format
                                         releaseDate = `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
-                                    } else if (pattern.toString().includes('\\d{1,2}[\/\\-\.']')) {
+                                    } else if (pattern.toString().includes('\\d{1,2}[\\/\\-\\.]')) {
                                         // Assume MM/DD/YYYY for simplicity
                                         releaseDate = `${match[3]}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`;
                                     } else {
