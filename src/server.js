@@ -1391,7 +1391,7 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
     }
 });
 
-// Update the function that extracts release dates to prioritize video publish dates
+// Update the channel releases endpoint to extract release dates from more sources
 app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
     try {
         console.log('Fetching releases with videos for channel:', req.params.channelId);
@@ -1488,48 +1488,134 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
                     
                     // Log the entire playlist details structure: ${JSON.stringify(Object.keys(playlistDetails))}`);
                     
-                    // First try to get video publish dates as the most reliable source
+                    // Extract release date from playlist details
                     let releaseDate = null;
                     
-                    if (playlistDetails.videos && playlistDetails.videos.length > 0) {
-                        try {
-                            // Get the first few videos to analyze their publish dates
-                            const videosToCheck = playlistDetails.videos.slice(0, 3); // Check first 3 videos
-                            const publishDates = [];
+                    // Try to find release date in various locations
+                    // 1. Check in metadata
+                    if (playlistDetails.metadata) {
+                        console.log('Metadata keys:', Object.keys(playlistDetails.metadata));
+                        
+                        if (playlistDetails.metadata.publish_date) {
+                            releaseDate = playlistDetails.metadata.publish_date;
+                            console.log('Found release date in metadata.publish_date:', releaseDate);
+                        } else if (playlistDetails.metadata.date) {
+                            releaseDate = playlistDetails.metadata.date;
+                            console.log('Found release date in metadata.date:', releaseDate);
+                        } else if (playlistDetails.metadata.year) {
+                            releaseDate = playlistDetails.metadata.year + '-01-01';
+                            console.log('Found year in metadata.year, using as release date:', releaseDate);
+                        }
+                        
+                        // Check in description snippet
+                        if (!releaseDate && playlistDetails.metadata.description_snippet?.text) {
+                            const text = playlistDetails.metadata.description_snippet.text;
+                            console.log('Checking description snippet for date:', text);
                             
-                            for (const video of videosToCheck) {
-                                try {
-                                    const videoInfo = await yt.getInfo(video.id);
-                                    
-                                    if (videoInfo.basic_info?.publish_date) {
-                                        // Convert to YYYY-MM-DD format if needed
-                                        let publishDate = videoInfo.basic_info.publish_date;
-                                        if (publishDate.includes('T')) {
-                                            publishDate = publishDate.split('T')[0];
-                                        }
-                                        publishDates.push(publishDate);
-                                        console.log(`Video ${video.id} publish date:`, publishDate);
+                            // Try various date formats
+                            const datePatterns = [
+                                /Released on:?\s*(\d{4}-\d{2}-\d{2})/i,
+                                /Release date:?\s*(\d{4}-\d{2}-\d{2})/i,
+                                /Released:?\s*(\d{4}-\d{2}-\d{2})/i,
+                                /Published:?\s*(\d{4}-\d{2}-\d{2})/i,
+                                /Date:?\s*(\d{4}-\d{2}-\d{2})/i,
+                                /(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/,  // DD/MM/YYYY or MM/DD/YYYY
+                                /(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/   // YYYY/MM/DD
+                            ];
+                            
+                            for (const pattern of datePatterns) {
+                                const match = text.match(pattern);
+                                if (match) {
+                                    if (pattern.toString().includes('\\d{4}[\\/\\-\\.]')) {
+                                        // YYYY/MM/DD format
+                                        releaseDate = `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+                                    } else if (pattern.toString().includes('\\d{1,2}[\\/\\-\\.]')) {
+                                        // Assume MM/DD/YYYY for simplicity
+                                        releaseDate = `${match[3]}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`;
+                                    } else {
+                                        releaseDate = match[1];
                                     }
-                                } catch (videoError) {
-                                    console.error(`Error getting video info for ${video.id}:`, videoError.message);
+                                    console.log('Found date in description using pattern:', pattern, 'Date:', releaseDate);
+                                    break;
                                 }
                             }
-                            
-                            if (publishDates.length > 0) {
-                                // Sort dates to find the earliest one (likely the album release date)
-                                publishDates.sort();
-                                releaseDate = publishDates[0];
-                                console.log('Using earliest video publish date as release date:', releaseDate);
-                            }
-                        } catch (error) {
-                            console.error('Error analyzing video publish dates:', error.message);
                         }
                     }
                     
-                    // Only if we couldn't get video publish dates, try other methods
-                    if (!releaseDate) {
-                        // ... existing fallback methods ...
+                    // 2. Check in header
+                    if (!releaseDate && playlistDetails.header) {
+                        console.log('Header keys:', Object.keys(playlistDetails.header));
+                        
+                        if (playlistDetails.header.publish_date) {
+                            releaseDate = playlistDetails.header.publish_date;
+                            console.log('Found release date in header.publish_date:', releaseDate);
+                        } else if (playlistDetails.header.date) {
+                            releaseDate = playlistDetails.header.date;
+                            console.log('Found release date in header.date:', releaseDate);
+                        }
+                        
+                        // Check in header description
+                        if (!releaseDate && playlistDetails.header.description?.text) {
+                            const text = playlistDetails.header.description.text;
+                            console.log('Checking header description for date:', text);
+                            
+                            const match = text.match(/Released on:?\s*(\d{4}-\d{2}-\d{2})/i) || 
+                                         text.match(/Release date:?\s*(\d{4}-\d{2}-\d{2})/i) ||
+                                         text.match(/Released:?\s*(\d{4}-\d{2}-\d{2})/i);
+                            if (match) {
+                                releaseDate = match[1];
+                                console.log('Found date in header description:', releaseDate);
+                            }
+                        }
                     }
+                    
+                    // 3. Check in description
+                    if (!releaseDate && playlistDetails.description?.text) {
+                        const text = playlistDetails.description.text;
+                        console.log('Checking main description for date:', text);
+                        
+                        const match = text.match(/Released on:?\s*(\d{4}-\d{2}-\d{2})/i) || 
+                                     text.match(/Release date:?\s*(\d{4}-\d{2}-\d{2})/i) ||
+                                     text.match(/Released:?\s*(\d{4}-\d{2}-\d{2})/i);
+                        if (match) {
+                            releaseDate = match[1];
+                            console.log('Found date in main description:', releaseDate);
+                        }
+                    }
+                    
+                    // 4. Check in first video's publish date as fallback
+                    if (!releaseDate && playlistDetails.videos && playlistDetails.videos.length > 0) {
+                        try {
+                            const firstVideo = playlistDetails.videos[0];
+                            const videoInfo = await yt.getInfo(firstVideo.id);
+                            
+                            if (videoInfo.basic_info?.publish_date) {
+                                releaseDate = videoInfo.basic_info.publish_date;
+                                console.log('Using first video publish date as fallback:', releaseDate);
+                            }
+                        } catch (error) {
+                            console.error('Error getting first video info:', error.message);
+                        }
+                    }
+                    
+                    // 5. Check in playlist's own metadata
+                    if (!releaseDate && playlist.published) {
+                        releaseDate = playlist.published.text || playlist.published;
+                        console.log('Using playlist published date:', releaseDate);
+                    }
+                    
+                    // 6. Try to extract year from title as last resort
+                    if (!releaseDate) {
+                        const title = playlist.title?.text || '';
+                        const yearMatch = title.match(/\b(19\d{2}|20\d{2})\b/);
+                        if (yearMatch) {
+                            releaseDate = `${yearMatch[1]}-01-01`;
+                            console.log('Extracted year from title:', releaseDate);
+                        }
+                    }
+                    
+                    // Log the raw playlist details for debugging
+                    console.log('Playlist metadata:', JSON.stringify(playlistDetails.metadata || {}, null, 2));
                     
                     const releaseInfo = {
                         playlist_id: playlistId,
@@ -1596,170 +1682,158 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
     }
 });
 
-// Add a new debug endpoint for playlists
+// Add a debug endpoint to get full playlist details
 app.get('/api/debug/playlist/:playlistId', async (req, res) => {
     try {
-        const playlistId = req.params.playlistId;
-        console.log(`Debug request for playlist: ${playlistId}`);
+        console.log(`Fetching full debug details for playlist: ${req.params.playlistId}`);
         
-        // Get full playlist details
-        const playlistDetails = await yt.getPlaylist(playlistId);
+        // Get the complete playlist details
+        const playlistDetails = await yt.getPlaylist(req.params.playlistId);
         
-        // Create a response object with all available data
+        // Create a response with all available data
         const response = {
-            playlist_id: playlistId,
-            basic_info: {
-                title: playlistDetails.title || '',
-                description: playlistDetails.description?.text || '',
-                channel_id: playlistDetails.channel_id || playlistDetails.author?.id || '',
-                channel_name: playlistDetails.author?.name || '',
-                video_count: playlistDetails.videos?.length || 0
+            playlist_id: req.params.playlistId,
+            raw_data: {
+                metadata: playlistDetails.metadata || {},
+                header: playlistDetails.header || {},
+                description: playlistDetails.description || {},
+                menu: playlistDetails.menu || {},
+                sections: playlistDetails.sections || [],
+                videos_count: playlistDetails.videos?.length || 0,
+                available_keys: Object.keys(playlistDetails)
             },
-            metadata: playlistDetails.metadata || {},
-            header: playlistDetails.header || {},
-            info: playlistDetails.info || {},
-            date_candidates: []
+            // Include a sample of videos (first 3)
+            sample_videos: (playlistDetails.videos || []).slice(0, 3).map(video => ({
+                id: video.id,
+                title: video.title?.text || '',
+                author: video.author || {},
+                published: video.published || null,
+                available_keys: Object.keys(video)
+            })),
+            // Try to extract dates from various locations
+            possible_dates: {
+                metadata_publish_date: playlistDetails.metadata?.publish_date || null,
+                metadata_date: playlistDetails.metadata?.date || null,
+                metadata_year: playlistDetails.metadata?.year || null,
+                header_publish_date: playlistDetails.header?.publish_date || null,
+                header_date: playlistDetails.header?.date || null,
+                first_video_publish_date: null, // Will be populated if available
+                description_dates: [] // Will be populated if dates are found in descriptions
+            }
         };
         
-        // Extract all potential date fields
-        const dateCandidates = [];
+        // Check for dates in descriptions
+        const descriptions = [
+            playlistDetails.metadata?.description_snippet?.text,
+            playlistDetails.header?.description?.text,
+            playlistDetails.description?.text
+        ].filter(Boolean);
         
-        // Function to recursively search for date fields
-        function findDateFields(obj, path = '') {
-            if (!obj || typeof obj !== 'object') return;
-            
-            for (const [key, value] of Object.entries(obj)) {
-                const currentPath = path ? `${path}.${key}` : key;
-                
-                // Check if the key or value might contain date information
-                if (
-                    (typeof value === 'string' && (
-                        key.includes('date') || 
-                        key.includes('time') || 
-                        key.includes('publish') || 
-                        key.includes('created') || 
-                        key.includes('updated') ||
-                        /\d{4}-\d{2}-\d{2}/.test(value) ||
-                        /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4}\b/i.test(value)
-                    )) ||
-                    key.includes('date') || 
-                    key.includes('time') || 
-                    key.includes('publish') || 
-                    key.includes('created') || 
-                    key.includes('updated')
-                ) {
-                    dateCandidates.push({
-                        path: currentPath,
-                        key: key,
-                        value: value,
-                        type: typeof value
-                    });
-                }
-                
-                // Recursively search nested objects
-                if (typeof value === 'object' && value !== null) {
-                    findDateFields(value, currentPath);
-                }
-            }
-        }
-        
-        // Search for date fields in the entire response
-        findDateFields(playlistDetails);
-        response.date_candidates = dateCandidates;
-        
-        // Get video publish dates
-        if (playlistDetails.videos && playlistDetails.videos.length > 0) {
-            response.video_dates = [];
-            
-            // Check first 3 videos
-            const videosToCheck = playlistDetails.videos.slice(0, 3);
-            
-            for (const video of videosToCheck) {
-                try {
-                    const videoInfo = await yt.getInfo(video.id);
-                    
-                    const videoDate = {
-                        video_id: video.id,
-                        title: video.title?.text || '',
-                        publish_date: null,
-                        date_fields: []
-                    };
-                    
-                    // Extract publish date from various locations
-                    if (videoInfo.basic_info?.publish_date) {
-                        videoDate.publish_date = videoInfo.basic_info.publish_date;
-                        videoDate.date_fields.push({
-                            path: 'basic_info.publish_date',
-                            value: videoInfo.basic_info.publish_date
-                        });
-                    }
-                    
-                    // Find all date fields in video info
-                    findDateFields(videoInfo);
-                    const videoDateFields = dateCandidates.filter(item => 
-                        !response.date_candidates.some(existing => existing.path === item.path)
-                    );
-                    
-                    videoDate.date_fields = videoDate.date_fields.concat(videoDateFields);
-                    response.video_dates.push(videoDate);
-                    
-                } catch (error) {
-                    console.error(`Error getting video info for ${video.id}:`, error.message);
-                }
-            }
-        }
-        
-        // Extract text dates from description
-        if (response.basic_info.description) {
-            const description = response.basic_info.description;
-            response.description_date_matches = [];
-            
-            // Check for date patterns in description
+        for (const desc of descriptions) {
             const datePatterns = [
-                { pattern: /Released on:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Released on YYYY-MM-DD' },
-                { pattern: /Release date:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Release date YYYY-MM-DD' },
-                { pattern: /Released:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Released YYYY-MM-DD' },
-                { pattern: /Published:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Published YYYY-MM-DD' },
-                { pattern: /Date:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Date YYYY-MM-DD' },
-                { pattern: /(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/, type: 'MM/DD/YYYY or DD/MM/YYYY' },
-                { pattern: /(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/, type: 'YYYY/MM/DD' },
-                { pattern: /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(\d{4})\b/i, type: 'Month DD, YYYY' }
+                /Released on:?\s*(\d{4}-\d{2}-\d{2})/i,
+                /Release date:?\s*(\d{4}-\d{2}-\d{2})/i,
+                /Released:?\s*(\d{4}-\d{2}-\d{2})/i,
+                /Published:?\s*(\d{4}-\d{2}-\d{2})/i,
+                /Date:?\s*(\d{4}-\d{2}-\d{2})/i,
+                /(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/, // MM/DD/YYYY or DD/MM/YYYY
+                /(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/ // YYYY/MM/DD
             ];
             
-            for (const { pattern, type } of datePatterns) {
-                const matches = description.match(pattern);
-                if (matches) {
-                    response.description_date_matches.push({
-                        type: type,
-                        match: matches[0],
-                        groups: matches.slice(1)
+            for (const pattern of datePatterns) {
+                const match = desc.match(pattern);
+                if (match) {
+                    response.possible_dates.description_dates.push({
+                        pattern: pattern.toString(),
+                        match: match[0],
+                        extracted_date: match[1]
                     });
                 }
             }
         }
         
-        // Check for year in title
-        if (response.basic_info.title) {
-            const yearMatch = response.basic_info.title.match(/\b(19\d{2}|20\d{2})\b/);
-            if (yearMatch) {
-                response.year_in_title = yearMatch[1];
+        // Try to get first video's publish date
+        if (playlistDetails.videos && playlistDetails.videos.length > 0) {
+            try {
+                const firstVideo = playlistDetails.videos[0];
+                const videoInfo = await yt.getInfo(firstVideo.id);
+                
+                response.possible_dates.first_video_publish_date = videoInfo.basic_info?.publish_date || null;
+                
+                // Add more video details for debugging
+                response.first_video_details = {
+                    basic_info: videoInfo.basic_info || {},
+                    available_keys: Object.keys(videoInfo)
+                };
+            } catch (error) {
+                console.error('Error getting first video info:', error.message);
             }
         }
         
-        // Add raw data for complete inspection
-        if (req.query.raw === 'true') {
-            response.raw_data = playlistDetails;
-        }
+        // Add a deep search for any date-like strings
+        response.date_deep_search = findDatesInObject(playlistDetails);
         
         res.json(response);
     } catch (error) {
-        console.error('Error in playlist debug endpoint:', error);
-        res.status(500).json({ 
-            error: error.message,
-            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-        });
+        console.error(`Error fetching playlist debug details: ${error.message}`);
+        res.status(500).json({ error: error.message });
     }
 });
+
+// Helper function to recursively search for date-like strings in an object
+function findDatesInObject(obj, path = '', results = []) {
+    if (!obj || typeof obj !== 'object') return results;
+    
+    // Check if this is a date string
+    if (typeof obj === 'string') {
+        const datePatterns = [
+            /\d{4}-\d{2}-\d{2}/,
+            /\d{1,2}\/\d{1,2}\/\d{4}/,
+            /\d{4}\/\d{1,2}\/\d{1,2}/
+        ];
+        
+        for (const pattern of datePatterns) {
+            if (pattern.test(obj)) {
+                results.push({
+                    path: path,
+                    value: obj
+                });
+                break;
+            }
+        }
+        return results;
+    }
+    
+    // Recursively search in object properties
+    for (const key in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, key)) {
+            const newPath = path ? `${path}.${key}` : key;
+            
+            // Skip circular references and functions
+            if (typeof obj[key] === 'object' && obj[key] !== null) {
+                findDatesInObject(obj[key], newPath, results);
+            } else if (typeof obj[key] === 'string') {
+                const datePatterns = [
+                    /\d{4}-\d{2}-\d{2}/,
+                    /\d{1,2}\/\d{1,2}\/\d{4}/,
+                    /\d{4}\/\d{1,2}\/\d{1,2}/
+                ];
+                
+                for (const pattern of datePatterns) {
+                    if (pattern.test(obj[key])) {
+                        results.push({
+                            path: newPath,
+                            value: obj[key]
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    return results;
+}
 
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
