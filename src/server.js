@@ -312,7 +312,7 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
             currentPage++;
         }
 
-        // Process current page videos in parallel
+        // Process current page videos
         if (currentBatch?.videos) {
             const videos = currentBatch.videos.slice(0, limit);
             const processedVideos = [];
@@ -323,11 +323,16 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     videoCount++;
                     console.log(`Processing video ${videoCount}/${videos.length}: ${video.id}`);
 
-                    // Extract basic info without additional API calls when possible
+                    // Get detailed video info to ensure we have accurate publish dates
+                    const videoInfo = type === 'shorts' ?
+                        await yt.getInfo(video.id) :
+                        await yt.getInfo(video.id);
+                    
+                    // Extract basic info
                     const videoData = {
                         video_id: video.id || video.videoId,
-                        title: video.title?.text || '',
-                        description: video.description_snippet?.text || '',
+                        title: video.title?.text || videoInfo.basic_info?.title || '',
+                        description: video.description_snippet?.text || videoInfo.basic_info?.description || '',
                         thumbnail_url: video.thumbnail?.[0]?.url || 
                                      `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
                         published_at: null, // Will be set below
@@ -338,28 +343,35 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                         is_short: type === 'shorts'
                     };
 
-                    // Extract published date - FIXED to preserve the original date
-                    if (video.published?.text) {
-                        try {
-                            const publishedText = video.published.text;
-                            console.log(`Raw published date for ${video.id}: ${publishedText}`);
-                            
-                            // Parse the date properly
-                            const parsedDate = parseYouTubeDate(publishedText);
-                            if (parsedDate) {
-                                videoData.published_at = parsedDate;
-                                console.log(`Parsed published date for ${video.id}: ${parsedDate}`);
-                            } else {
-                                console.log(`Failed to parse date: ${publishedText}`);
-                            }
-                        } catch (dateError) {
-                            console.error(`Error parsing date for ${video.id}:`, dateError);
+                    // Extract published date from videoInfo which is more reliable
+                    if (videoInfo.basic_info?.publish_date) {
+                        videoData.published_at = videoInfo.basic_info.publish_date;
+                        console.log(`Using publish_date from videoInfo for ${video.id}: ${videoData.published_at}`);
+                    } else if (video.published?.text) {
+                        // Fallback to published text if available
+                        const publishedText = video.published.text;
+                        console.log(`Raw published date for ${video.id}: ${publishedText}`);
+                        
+                        // Parse the date properly
+                        const parsedDate = parseYouTubeDate(publishedText);
+                        if (parsedDate) {
+                            videoData.published_at = parsedDate;
+                            console.log(`Parsed published date for ${video.id}: ${parsedDate}`);
                         }
                     }
 
                     processedVideos.push(videoData);
                 } catch (error) {
                     console.error(`Error processing video ${video.id}:`, error);
+                    // Still add the video with basic info even if there was an error
+                    processedVideos.push({
+                        video_id: video.id || video.videoId,
+                        title: video.title?.text || 'Unknown title',
+                        thumbnail_url: `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        error: error.message
+                    });
                 }
             }
 
@@ -1315,7 +1327,7 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
                         has_endpoint: !!playlist.endpoint,
                         endpoint: playlist.endpoint?.browse_endpoint?.browse_id || '',
                         channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || '',
-                        channel_name: playlist.author?.name || '',
+                        channel_name: playlist.author?.name || channelInfo.title,
                         first_video_id: playlist.first_video_id || ''
                     };
                     
