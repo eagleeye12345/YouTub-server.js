@@ -1596,6 +1596,171 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
     }
 });
 
+// Add a new debug endpoint for playlists
+app.get('/api/debug/playlist/:playlistId', async (req, res) => {
+    try {
+        const playlistId = req.params.playlistId;
+        console.log(`Debug request for playlist: ${playlistId}`);
+        
+        // Get full playlist details
+        const playlistDetails = await yt.getPlaylist(playlistId);
+        
+        // Create a response object with all available data
+        const response = {
+            playlist_id: playlistId,
+            basic_info: {
+                title: playlistDetails.title || '',
+                description: playlistDetails.description?.text || '',
+                channel_id: playlistDetails.channel_id || playlistDetails.author?.id || '',
+                channel_name: playlistDetails.author?.name || '',
+                video_count: playlistDetails.videos?.length || 0
+            },
+            metadata: playlistDetails.metadata || {},
+            header: playlistDetails.header || {},
+            info: playlistDetails.info || {},
+            date_candidates: []
+        };
+        
+        // Extract all potential date fields
+        const dateCandidates = [];
+        
+        // Function to recursively search for date fields
+        function findDateFields(obj, path = '') {
+            if (!obj || typeof obj !== 'object') return;
+            
+            for (const [key, value] of Object.entries(obj)) {
+                const currentPath = path ? `${path}.${key}` : key;
+                
+                // Check if the key or value might contain date information
+                if (
+                    (typeof value === 'string' && (
+                        key.includes('date') || 
+                        key.includes('time') || 
+                        key.includes('publish') || 
+                        key.includes('created') || 
+                        key.includes('updated') ||
+                        /\d{4}-\d{2}-\d{2}/.test(value) ||
+                        /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4}\b/i.test(value)
+                    )) ||
+                    key.includes('date') || 
+                    key.includes('time') || 
+                    key.includes('publish') || 
+                    key.includes('created') || 
+                    key.includes('updated')
+                ) {
+                    dateCandidates.push({
+                        path: currentPath,
+                        key: key,
+                        value: value,
+                        type: typeof value
+                    });
+                }
+                
+                // Recursively search nested objects
+                if (typeof value === 'object' && value !== null) {
+                    findDateFields(value, currentPath);
+                }
+            }
+        }
+        
+        // Search for date fields in the entire response
+        findDateFields(playlistDetails);
+        response.date_candidates = dateCandidates;
+        
+        // Get video publish dates
+        if (playlistDetails.videos && playlistDetails.videos.length > 0) {
+            response.video_dates = [];
+            
+            // Check first 3 videos
+            const videosToCheck = playlistDetails.videos.slice(0, 3);
+            
+            for (const video of videosToCheck) {
+                try {
+                    const videoInfo = await yt.getInfo(video.id);
+                    
+                    const videoDate = {
+                        video_id: video.id,
+                        title: video.title?.text || '',
+                        publish_date: null,
+                        date_fields: []
+                    };
+                    
+                    // Extract publish date from various locations
+                    if (videoInfo.basic_info?.publish_date) {
+                        videoDate.publish_date = videoInfo.basic_info.publish_date;
+                        videoDate.date_fields.push({
+                            path: 'basic_info.publish_date',
+                            value: videoInfo.basic_info.publish_date
+                        });
+                    }
+                    
+                    // Find all date fields in video info
+                    findDateFields(videoInfo);
+                    const videoDateFields = dateCandidates.filter(item => 
+                        !response.date_candidates.some(existing => existing.path === item.path)
+                    );
+                    
+                    videoDate.date_fields = videoDate.date_fields.concat(videoDateFields);
+                    response.video_dates.push(videoDate);
+                    
+                } catch (error) {
+                    console.error(`Error getting video info for ${video.id}:`, error.message);
+                }
+            }
+        }
+        
+        // Extract text dates from description
+        if (response.basic_info.description) {
+            const description = response.basic_info.description;
+            response.description_date_matches = [];
+            
+            // Check for date patterns in description
+            const datePatterns = [
+                { pattern: /Released on:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Released on YYYY-MM-DD' },
+                { pattern: /Release date:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Release date YYYY-MM-DD' },
+                { pattern: /Released:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Released YYYY-MM-DD' },
+                { pattern: /Published:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Published YYYY-MM-DD' },
+                { pattern: /Date:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Date YYYY-MM-DD' },
+                { pattern: /(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/, type: 'MM/DD/YYYY or DD/MM/YYYY' },
+                { pattern: /(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/, type: 'YYYY/MM/DD' },
+                { pattern: /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(\d{4})\b/i, type: 'Month DD, YYYY' }
+            ];
+            
+            for (const { pattern, type } of datePatterns) {
+                const matches = description.match(pattern);
+                if (matches) {
+                    response.description_date_matches.push({
+                        type: type,
+                        match: matches[0],
+                        groups: matches.slice(1)
+                    });
+                }
+            }
+        }
+        
+        // Check for year in title
+        if (response.basic_info.title) {
+            const yearMatch = response.basic_info.title.match(/\b(19\d{2}|20\d{2})\b/);
+            if (yearMatch) {
+                response.year_in_title = yearMatch[1];
+            }
+        }
+        
+        // Add raw data for complete inspection
+        if (req.query.raw === 'true') {
+            response.raw_data = playlistDetails;
+        }
+        
+        res.json(response);
+    } catch (error) {
+        console.error('Error in playlist debug endpoint:', error);
+        res.status(500).json({ 
+            error: error.message,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+});
+
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
     app.listen(port, () => {
