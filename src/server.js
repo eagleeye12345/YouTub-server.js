@@ -520,64 +520,161 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
   }
 });
 
-// Update the shorts processing logic in the /api/shorts/:videoId endpoint
-app.get('/api/shorts/:videoId', async (req, res) => {
-    try {
-        console.log(`Fetching shorts info for: ${req.params.videoId}`);
-        
-        // Get both shorts-specific and regular info
-        let shortInfo = await yt.getShortsVideoInfo(req.params.videoId).catch(() => null);
-        let regularInfo = await yt.getInfo(req.params.videoId).catch(() => null);
-        
-        // Combine the info objects
-        const combinedInfo = {
-            ...shortInfo,
-            regularInfo: regularInfo,
-            basic_info: shortInfo?.basic_info || regularInfo?.basic_info || {},
-            primary_info: regularInfo?.primary_info || shortInfo?.primary_info
-        };
-
-        // Extract simplified info
-        const simplifiedInfo = {
-            video_id: req.params.videoId,
-            title: combinedInfo.basic_info?.title || '',
-            description: combinedInfo.basic_info?.description || '',
-            // Always use the clean thumbnail URL format
-            thumbnail_url: getCleanThumbnailUrl(req.params.videoId),
-            views: extractViews(combinedInfo) || '0',
-            published_at: extractPublishedDate(combinedInfo),
-            channel_id: combinedInfo.basic_info?.channel?.id,
-            channel_title: combinedInfo.basic_info?.channel?.name,
-            channel_thumbnail: combinedInfo.basic_info?.channel?.thumbnails?.[0]?.url,
-            duration: combinedInfo.basic_info?.duration?.text || '',
-            is_short: true,
-            playability_status: combinedInfo.playability_status
-        };
-
-        console.log('Final simplified info:', JSON.stringify(simplifiedInfo, null, 2));
-        res.json(simplifiedInfo);
-    } catch (error) {
-        console.error('Shorts error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Update the channel shorts endpoint
+// Update the shorts endpoint to use the same date extraction logic
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 30;
         
         console.log(`Fetching shorts for channel: ${req.params.channelId} (page ${page})`);
-        
-        // Get channel
         const channel = await yt.getChannel(req.params.channelId);
+        
+        // Extract topic channel details if available
+        const topicDetails = await extractTopicChannelDetails(channel);
+        
+        // Get shorts tab
+        const shortsTab = await channel.getShorts();
 
-        if (!channel.has_shorts) {
-            console.log('No shorts found for channel');
-            return res.json({
-                shorts: [],
-                pagination: { 
+        console.log(`Found ${shortsTab?.videos?.length} shorts`);
+
+        let currentBatch = shortsTab;
+        let currentPage = 1;
+
+        // Skip to requested page
+        while (currentPage < page && currentBatch?.has_continuation) {
+            currentBatch = await currentBatch.getContinuation();
+            currentPage++;
+        }
+
+        // Process current page shorts
+        if (currentBatch?.videos) {
+            const shorts = currentBatch.videos.slice(0, limit);
+            const processedShorts = [];
+            let shortCount = 0;
+
+            for (const short of shorts) {
+                try {
+                    shortCount++;
+                    console.log(`Processing short ${shortCount}/${shorts.length}: ${short.id}`);
+
+                    // Get detailed short info
+                    const shortInfo = await yt.getInfo(short.id);
+                    
+                    // Extract basic info
+                    const shortData = {
+                        video_id: short.id || short.videoId,
+                        title: shortInfo.basic_info?.title || short.title?.text || '',
+                        description: shortInfo.basic_info?.description || short.description_snippet?.text || '',
+                        thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
+                                     short.thumbnail?.[0]?.url || 
+                                     `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                        published_at: null, // Will be set below
+                        views: shortInfo.basic_info?.view_count || 
+                               short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                        channel_id: shortInfo.basic_info?.channel?.id || 
+                                   channel.metadata?.external_id || '',
+                        channel_title: shortInfo.basic_info?.channel?.name || 
+                                      channel.metadata?.title || '',
+                        duration: shortInfo.basic_info?.duration || 
+                                short.duration?.text || '',
+                        is_short: true
+                    };
+
+                    // Try all possible date fields in order of reliability
+                    
+                    // 1. Check microformat which often has exact dates
+                    if (shortInfo.microformat?.playerMicroformatRenderer?.publishDate) {
+                        shortData.published_at = shortInfo.microformat.playerMicroformatRenderer.publishDate;
+                        console.log(`Using microformat publishDate for ${short.id}: ${shortData.published_at}`);
+                    }
+                    else if (shortInfo.microformat?.playerMicroformatRenderer?.uploadDate) {
+                        shortData.published_at = shortInfo.microformat.playerMicroformatRenderer.uploadDate;
+                        console.log(`Using microformat uploadDate for ${short.id}: ${shortData.published_at}`);
+                    }
+                    // 2. Check basic_info
+                    else if (shortInfo.basic_info?.publish_date) {
+                        shortData.published_at = shortInfo.basic_info.publish_date;
+                        console.log(`Using basic_info publish_date for ${short.id}: ${shortData.published_at}`);
+                    }
+                    // 3. Check primary_info
+                    else if (shortInfo.primary_info?.published?.text) {
+                        const publishedText = shortInfo.primary_info.published.text;
+                        console.log(`Found primary_info published text for ${short.id}: ${publishedText}`);
+                        
+                        // Try to parse as exact date first
+                        try {
+                            const date = new Date(publishedText);
+                            if (!isNaN(date.getTime())) {
+                                shortData.published_at = date.toISOString();
+                                console.log(`Parsed primary_info date for ${short.id}: ${shortData.published_at}`);
+                            }
+                        } catch (e) {
+                            console.log(`Could not parse primary_info date as exact date: ${e.message}`);
+                        }
+                    }
+                    // 4. Check date_text in primary_info
+                    else if (shortInfo.primary_info?.date_text?.simpleText) {
+                        const dateText = shortInfo.primary_info.date_text.simpleText;
+                        console.log(`Found primary_info date_text for ${short.id}: ${dateText}`);
+                        
+                        // Try to parse as exact date
+                        try {
+                            const date = new Date(dateText);
+                            if (!isNaN(date.getTime())) {
+                                shortData.published_at = date.toISOString();
+                                console.log(`Parsed date_text for ${short.id}: ${shortData.published_at}`);
+                            }
+                        } catch (e) {
+                            console.log(`Could not parse date_text as exact date: ${e.message}`);
+                        }
+                    }
+                    // 5. Last resort: try to parse from the short's published text
+                    else if (short.published?.text) {
+                        console.log(`No exact date found, falling back to relative date for ${short.id}`);
+                        const publishedText = short.published.text;
+                        console.log(`Raw published date for ${short.id}: ${publishedText}`);
+                        
+                        // Parse the date properly
+                        const parsedDate = parseYouTubeDate(publishedText);
+                        if (parsedDate) {
+                            shortData.published_at = parsedDate;
+                            console.log(`Parsed published date for ${short.id}: ${parsedDate}`);
+                        }
+                    }
+
+                    processedShorts.push(shortData);
+                } catch (error) {
+                    console.error(`Error processing short ${short.id}:`, error);
+                    // Still add the short with basic info even if there was an error
+                    processedShorts.push({
+                        video_id: short.id || short.videoId,
+                        title: short.title?.text || 'Unknown title',
+                        thumbnail_url: `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        error: error.message,
+                        is_short: true
+                    });
+                }
+            }
+
+            // Construct the response
+            const response = {
+                videos: processedShorts,
+                topic_details: topicDetails,
+                pagination: {
+                    has_more: currentBatch.has_continuation,
+                    current_page: page,
+                    items_per_page: limit,
+                    total_items: processedShorts.length
+                }
+            };
+            
+            res.json(response);
+        } else {
+            res.json({
+                videos: [],
+                pagination: {
                     has_more: false,
                     current_page: page,
                     items_per_page: limit,
@@ -585,208 +682,9 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 }
             });
         }
-
-        // Get shorts tab
-        const shortsTab = await channel.getShorts();
-        console.log(`Found ${shortsTab?.videos?.length} shorts`);
-
-        let currentBatch = shortsTab;
-        let allShorts = [];
-
-        // Collect all shorts up to the requested page
-        for (let currentPage = 1; currentPage <= page; currentPage++) {
-            if (currentBatch?.videos?.length) {
-                allShorts = allShorts.concat(currentBatch.videos);
-            }
-
-            if (currentPage < page && currentBatch?.has_continuation) {
-                currentBatch = await currentBatch.getContinuation();
-            }
-        }
-
-        // Calculate the slice for the current page
-        const startIndex = (page - 1) * limit;
-        const endIndex = startIndex + limit;
-        const shortsForCurrentPage = allShorts.slice(startIndex, endIndex);
-
-        // Process shorts
-        const processedShorts = [];
-        let shortCount = 0;
-        for (const short of shortsForCurrentPage) {
-            try {
-                const videoId = short.on_tap_endpoint?.payload?.videoId;
-                if (!videoId) continue;
-
-                shortCount++;
-                console.log(`Processing short ${shortCount}/${shortsForCurrentPage.length}: ${videoId}`);
-
-                // Try to get shorts info, but handle parsing errors gracefully
-                let shortInfo = null;
-                try {
-                    shortInfo = await yt.getShortsVideoInfo(videoId);
-                } catch (error) {
-                    console.log(`Error getting shorts info for ${videoId}: ${error.message}`);
-                    // Continue with shortInfo as null
-                }
-
-                // Try to get regular info as fallback, but handle parsing errors gracefully
-                let regularInfo = null;
-                try {
-                    regularInfo = await yt.getInfo(videoId);
-                } catch (error) {
-                    console.log(`Error getting regular info for ${videoId}: ${error.message}`);
-                    // Continue with regularInfo as null
-                }
-
-                // If both API calls failed, extract basic info from the short object
-                if (!shortInfo && !regularInfo) {
-                    console.log(`Using fallback data extraction for ${videoId}`);
-                    
-                    const shortData = {
-                        video_id: videoId,
-                        title: short.overlay_metadata?.primary_text?.text || 
-                               short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
-                        description: '',
-                        thumbnail_url: getCleanThumbnailUrl(videoId),
-                        published_at: null,
-                        views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
-                        channel_id: channel.metadata?.external_id || '',
-                        channel_title: channel.metadata?.title || '',
-                        duration: '',
-                        is_short: true
-                    };
-                    
-                    processedShorts.push(shortData);
-                    continue;
-                }
-
-                // Combine the info objects
-                const combinedInfo = {
-                    ...shortInfo,
-                    regularInfo: regularInfo,
-                    raw: shortInfo || regularInfo,
-                    primary_info: regularInfo?.primary_info || shortInfo?.primary_info
-                };
-
-                // Get exact view count
-                let viewCount = '';
-                if (regularInfo?.primary_info?.view_count?.view_count?.text) {
-                    // Use exact view count from view_count.text (e.g., "245,906 views")
-                    viewCount = regularInfo.primary_info.view_count.view_count.text.replace(/[^0-9]/g, '');
-                } else if (regularInfo?.primary_info?.view_count?.original_view_count) {
-                    // Try original_view_count as backup
-                    viewCount = regularInfo.primary_info.view_count.original_view_count;
-                } else if (regularInfo?.basic_info?.view_count) {
-                    // Fallback to basic_info view count
-                    viewCount = regularInfo.basic_info.view_count.toString();
-                } else if (short.overlay_metadata?.secondary_text?.text) {
-                    // Fallback to overlay metadata
-                    viewCount = short.overlay_metadata.secondary_text.text.replace(/[^0-9.KMB]/gi, '');
-                } else if (short.accessibility_text) {
-                    // Last resort: try to extract from accessibility text
-                    const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i);
-                    viewCount = viewMatch ? viewMatch[1] : '0';
-                }
-
-                // Extract data directly from the combined info
-                const shortData = {
-                    video_id: videoId,
-                    title: short.overlay_metadata?.primary_text?.text || 
-                           combinedInfo.basic_info?.title ||
-                           short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
-                    description: combinedInfo.basic_info?.description || '',
-                    // Always use the clean thumbnail URL format
-                    thumbnail_url: getCleanThumbnailUrl(videoId),
-                    published_at: regularInfo?.primary_info?.published?.text ? 
-                                 new Date(regularInfo.primary_info.published.text).toISOString() : null,
-                    views: viewCount,
-                    channel_id: channel.metadata?.external_id || '',
-                    channel_title: channel.metadata?.title || '',
-                    duration: combinedInfo.basic_info?.duration?.text || '',
-                    is_short: true
-                };
-
-                processedShorts.push(shortData);
-
-            } catch (error) {
-                console.error(`Error processing short: ${error.message}`);
-                continue;
-            }
-        }
-
-        console.log(`Successfully processed ${processedShorts.length} shorts`);
-        res.json({
-            shorts: processedShorts,
-            pagination: {
-                has_more: currentBatch?.has_continuation || false,
-                current_page: page,
-                items_per_page: limit,
-                total_items: processedShorts.length
-            }
-        });
-
     } catch (error) {
-        console.error('Channel shorts error:', error);
+        console.error('Error fetching shorts:', error);
         res.status(500).json({ error: error.message });
-    }
-});
-
-// Add a new debug endpoint for shorts
-app.get('/api/debug/shorts/:videoId', async (req, res) => {
-    try {
-        const results = {
-            shortsInfo: null,
-            regularInfo: null,
-            error: null
-        };
-
-        // Try getting shorts-specific info
-        try {
-            const shortsInfo = await yt.getShortsVideoInfo(req.params.videoId);
-            results.shortsInfo = {
-                basic_info: shortsInfo.basic_info,
-                primary_info: shortsInfo.primary_info,
-                secondary_info: shortsInfo.secondary_info,
-                microformat: shortsInfo.microformat,
-                video_details: shortsInfo.video_details,
-                overlay_metadata: shortsInfo.overlay_metadata,
-                published: shortsInfo.published,
-                publishedTimeText: shortsInfo.publishedTimeText,
-                dateText: shortsInfo.dateText,
-                // Include raw data for inspection
-                raw: shortsInfo
-            };
-        } catch (error) {
-            results.error = `Shorts info error: ${error.message}`;
-        }
-
-        // Also try getting regular video info as fallback
-        try {
-            const videoInfo = await yt.getInfo(req.params.videoId);
-            results.regularInfo = {
-                basic_info: videoInfo.basic_info,
-                primary_info: videoInfo.primary_info,
-                secondary_info: videoInfo.secondary_info,
-                microformat: videoInfo.microformat,
-                video_details: videoInfo.video_details,
-                // Include raw data for inspection
-                raw: videoInfo
-            };
-        } catch (error) {
-            if (!results.error) {
-                results.error = `Regular info error: ${error.message}`;
-            }
-        }
-
-        // Send the full response
-        res.header('Content-Type', 'application/json');
-        res.send(JSON.stringify(results, null, 2));
-
-    } catch (error) {
-        res.status(500).json({
-            error: error.message,
-            stack: error.stack
-        });
     }
 });
 
