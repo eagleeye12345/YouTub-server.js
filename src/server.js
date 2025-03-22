@@ -284,7 +284,205 @@ function getCleanThumbnailUrl(videoId) {
 }
 
 // Enhanced video endpoint to extract dates from all possible locations
-app.get('/api/channel/:channelId/videos', getChannelVideos);
+app.get('/api/channel/:channelId/videos', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 30;
+        const type = req.query.type || 'videos';
+        
+        console.log(`Fetching ${type} for channel: ${req.params.channelId} (page ${page})`);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Extract topic channel details if available
+        const topicDetails = await extractTopicChannelDetails(channel);
+        
+        // Get videos/shorts tab
+        const videosTab = type === 'shorts' ? 
+            await channel.getShorts() : 
+            await channel.getVideos();
+
+        console.log(`Found ${videosTab?.videos?.length} videos`);
+
+        let currentBatch = videosTab;
+        let currentPage = 1;
+
+        // Skip to requested page
+        while (currentPage < page && currentBatch?.has_continuation) {
+            currentBatch = await currentBatch.getContinuation();
+            currentPage++;
+        }
+
+        // Process current page videos
+        if (currentBatch?.videos) {
+            const videos = currentBatch.videos.slice(0, limit);
+            const processedVideos = [];
+            let videoCount = 0;
+
+            // For debugging: Get the first video's full info to examine structure
+            if (videos.length > 0) {
+                try {
+                    const sampleVideoInfo = await yt.getInfo(videos[0].id);
+                    console.log('SAMPLE VIDEO INFO STRUCTURE:');
+                    console.log('Available top-level keys:', Object.keys(sampleVideoInfo));
+                    
+                    // Log primary_info structure if it exists
+                    if (sampleVideoInfo.primary_info) {
+                        console.log('PRIMARY INFO KEYS:', Object.keys(sampleVideoInfo.primary_info));
+                        
+                        // Check for date fields in primary_info
+                        if (sampleVideoInfo.primary_info.date_text) {
+                            console.log('DATE TEXT:', sampleVideoInfo.primary_info.date_text);
+                        }
+                        if (sampleVideoInfo.primary_info.published) {
+                            console.log('PUBLISHED:', sampleVideoInfo.primary_info.published);
+                        }
+                    }
+                    
+                    // Log microformat structure if it exists
+                    if (sampleVideoInfo.microformat?.playerMicroformatRenderer) {
+                        console.log('MICROFORMAT DATE FIELDS:');
+                        console.log('publishDate:', sampleVideoInfo.microformat.playerMicroformatRenderer.publishDate);
+                        console.log('uploadDate:', sampleVideoInfo.microformat.playerMicroformatRenderer.uploadDate);
+                    }
+                } catch (error) {
+                    console.error('Error examining sample video:', error);
+                }
+            }
+
+            for (const video of videos) {
+                try {
+                    videoCount++;
+                    console.log(`Processing video ${videoCount}/${videos.length}: ${video.id}`);
+
+                    // Get detailed video info
+                    const videoInfo = await yt.getInfo(video.id);
+                    
+                    // Extract basic info
+                    const videoData = {
+                        video_id: video.id || video.videoId,
+                        title: videoInfo.basic_info?.title || video.title?.text || '',
+                        description: videoInfo.basic_info?.description || video.description_snippet?.text || '',
+                        thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
+                                     video.thumbnail?.[0]?.url || 
+                                     `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
+                        published_at: null, // Will be set below
+                        views: videoInfo.basic_info?.view_count || 
+                               video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                        channel_id: videoInfo.basic_info?.channel?.id || 
+                                   channel.metadata?.external_id || '',
+                        channel_title: videoInfo.basic_info?.channel?.name || 
+                                      channel.metadata?.title || '',
+                        duration: videoInfo.basic_info?.duration || 
+                                video.duration?.text || '',
+                        is_short: type === 'shorts'
+                    };
+
+                    // Try all possible date fields in order of reliability
+                    
+                    // 1. Check microformat which often has exact dates
+                    if (videoInfo.microformat?.playerMicroformatRenderer?.publishDate) {
+                        videoData.published_at = videoInfo.microformat.playerMicroformatRenderer.publishDate;
+                        console.log(`Using microformat publishDate for ${video.id}: ${videoData.published_at}`);
+                    }
+                    else if (videoInfo.microformat?.playerMicroformatRenderer?.uploadDate) {
+                        videoData.published_at = videoInfo.microformat.playerMicroformatRenderer.uploadDate;
+                        console.log(`Using microformat uploadDate for ${video.id}: ${videoData.published_at}`);
+                    }
+                    // 2. Check basic_info
+                    else if (videoInfo.basic_info?.publish_date) {
+                        videoData.published_at = videoInfo.basic_info.publish_date;
+                        console.log(`Using basic_info publish_date for ${video.id}: ${videoData.published_at}`);
+                    }
+                    // 3. Check primary_info
+                    else if (videoInfo.primary_info?.published?.text) {
+                        const publishedText = videoInfo.primary_info.published.text;
+                        console.log(`Found primary_info published text for ${video.id}: ${publishedText}`);
+                        
+                        // Try to parse as exact date
+                        try {
+                            const date = new Date(publishedText);
+                            if (!isNaN(date.getTime())) {
+                                videoData.published_at = date.toISOString();
+                                console.log(`Parsed primary_info date for ${video.id}: ${videoData.published_at}`);
+                            }
+                        } catch (e) {
+                            console.log(`Could not parse primary_info date as exact date: ${e.message}`);
+                        }
+                    }
+                    // 4. Check date_text in primary_info
+                    else if (videoInfo.primary_info?.date_text?.simpleText) {
+                        const dateText = videoInfo.primary_info.date_text.simpleText;
+                        console.log(`Found primary_info date_text for ${video.id}: ${dateText}`);
+                        
+                        // Try to parse as exact date
+                        try {
+                            const date = new Date(dateText);
+                            if (!isNaN(date.getTime())) {
+                                videoData.published_at = date.toISOString();
+                                console.log(`Parsed date_text for ${video.id}: ${videoData.published_at}`);
+                            }
+                        } catch (e) {
+                            console.log(`Could not parse date_text as exact date: ${e.message}`);
+                        }
+                    }
+                    // 5. Last resort: try to parse from the video's published text
+                    else if (video.published?.text) {
+                        console.log(`No exact date found, falling back to relative date for ${video.id}`);
+                        const publishedText = video.published.text;
+                        console.log(`Raw published date for ${video.id}: ${publishedText}`);
+                        
+                        // Parse the date properly
+                        const parsedDate = parseYouTubeDate(publishedText);
+                        if (parsedDate) {
+                            videoData.published_at = parsedDate;
+                            console.log(`Parsed published date for ${video.id}: ${parsedDate}`);
+                        }
+                    }
+
+                    processedVideos.push(videoData);
+                } catch (error) {
+                    console.error(`Error processing video ${video.id}:`, error);
+                    // Still add the video with basic info even if there was an error
+                    processedVideos.push({
+                        video_id: video.id || video.videoId,
+                        title: video.title?.text || 'Unknown title',
+                        thumbnail_url: `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        error: error.message
+                    });
+                }
+            }
+
+            // Construct the response
+            const response = {
+                videos: processedVideos,
+                topic_details: topicDetails,
+                pagination: {
+                    has_more: currentBatch.has_continuation,
+                    current_page: page,
+                    items_per_page: limit,
+                    total_items: processedVideos.length
+                }
+            };
+            
+            res.json(response);
+        } else {
+            res.json({
+                videos: [],
+                pagination: {
+                    has_more: false,
+                    current_page: page,
+                    items_per_page: limit,
+                    total_items: 0
+                }
+            });
+        }
+    } catch (error) {
+        console.error('Error fetching videos:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
 // Search endpoint
 app.get('/api/search', async (req, res) => {
@@ -322,124 +520,150 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
   }
 });
 
-// Update the shorts processing logic in the /api/shorts/:videoId endpoint
-app.get('/api/shorts/:videoId', async (req, res) => {
-    try {
-        console.log(`Fetching shorts info for: ${req.params.videoId}`);
-        
-        // Get both shorts-specific and regular info
-        let shortInfo = await yt.getShortsVideoInfo(req.params.videoId).catch(() => null);
-        let regularInfo = await yt.getInfo(req.params.videoId).catch(() => null);
-        
-        // Combine the info objects
-        const combinedInfo = {
-            ...shortInfo,
-            regularInfo: regularInfo,
-            basic_info: shortInfo?.basic_info || regularInfo?.basic_info || {},
-            primary_info: regularInfo?.primary_info || shortInfo?.primary_info
-        };
-
-        // Extract simplified info
-        const simplifiedInfo = {
-            video_id: req.params.videoId,
-            title: combinedInfo.basic_info?.title || '',
-            description: combinedInfo.basic_info?.description || '',
-            // Always use the clean thumbnail URL format
-            thumbnail_url: getCleanThumbnailUrl(req.params.videoId),
-            views: extractViews(combinedInfo) || '0',
-            published_at: extractPublishedDate(combinedInfo),
-            channel_id: combinedInfo.basic_info?.channel?.id,
-            channel_title: combinedInfo.basic_info?.channel?.name,
-            channel_thumbnail: combinedInfo.basic_info?.channel?.thumbnails?.[0]?.url,
-            duration: combinedInfo.basic_info?.duration?.text || '',
-            is_short: true,
-            playability_status: combinedInfo.playability_status
-        };
-
-        console.log('Final simplified info:', JSON.stringify(simplifiedInfo, null, 2));
-        res.json(simplifiedInfo);
-    } catch (error) {
-        console.error('Shorts error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Update the channel shorts endpoint
+// Update the shorts endpoint to use primary_info.published for dates
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
     try {
-        // Redirect to the videos endpoint with type=shorts
-        const page = req.query.page || 1;
-        const limit = req.query.limit || 30;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 30;
         
-        // Forward the request to the videos endpoint with type=shorts
-        const redirectUrl = `/api/channel/${req.params.channelId}/videos?type=shorts&page=${page}&limit=${limit}`;
-        console.log(`Redirecting shorts request to: ${redirectUrl}`);
+        console.log(`Fetching shorts for channel: ${req.params.channelId} (page ${page})`);
+        const channel = await yt.getChannel(req.params.channelId);
         
-        // Instead of redirecting, we'll handle it internally
-        req.query.type = 'shorts';
-        return await getChannelVideos(req, res);
+        // Get shorts tab
+        const shortsTab = await channel.getShorts();
+        console.log(`Found ${shortsTab?.videos?.length} shorts`);
+
+        let currentBatch = shortsTab;
+        let currentPage = 1;
+
+        // Skip to requested page
+        while (currentPage < page && currentBatch?.has_continuation) {
+            currentBatch = await currentBatch.getContinuation();
+            currentPage++;
+        }
+
+        // Process current page shorts
+        if (currentBatch?.videos) {
+            const shorts = currentBatch.videos.slice(0, limit);
+            const processedShorts = [];
+            let shortCount = 0;
+
+            for (const short of shorts) {
+                try {
+                    shortCount++;
+                    console.log(`Processing short ${shortCount}/${shorts.length}: ${short.id}`);
+
+                    // Get detailed short info
+                    const shortInfo = await yt.getInfo(short.id);
+                    
+                    // Extract basic info
+                    const shortData = {
+                        video_id: short.id || short.videoId,
+                        title: shortInfo.basic_info?.title || short.title?.text || '',
+                        description: shortInfo.basic_info?.description || short.description_snippet?.text || '',
+                        thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
+                                     short.thumbnail?.[0]?.url || 
+                                     `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                        published_at: null, // Will be set below
+                        views: shortInfo.basic_info?.view_count || 
+                               short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                        channel_id: shortInfo.basic_info?.channel?.id || 
+                                   channel.metadata?.external_id || '',
+                        channel_title: shortInfo.basic_info?.channel?.name || 
+                                      channel.metadata?.title || '',
+                        duration: shortInfo.basic_info?.duration || 
+                                short.duration?.text || '',
+                        is_short: true
+                    };
+
+                    // Try all possible date fields in order of reliability
+                    
+                    // 1. Check primary_info.published which we found works best
+                    if (shortInfo.primary_info?.published?.text) {
+                        const publishedText = shortInfo.primary_info.published.text;
+                        console.log(`Found primary_info published text for ${short.id}: ${publishedText}`);
+                        
+                        // Try to parse as exact date
+                        try {
+                            const date = new Date(publishedText);
+                            if (!isNaN(date.getTime())) {
+                                shortData.published_at = date.toISOString();
+                                console.log(`Parsed primary_info date for ${short.id}: ${shortData.published_at}`);
+                            }
+                        } catch (e) {
+                            console.log(`Could not parse primary_info date as exact date: ${e.message}`);
+                        }
+                    }
+                    // 2. Check microformat which often has exact dates
+                    else if (shortInfo.microformat?.playerMicroformatRenderer?.publishDate) {
+                        shortData.published_at = shortInfo.microformat.playerMicroformatRenderer.publishDate;
+                        console.log(`Using microformat publishDate for ${short.id}: ${shortData.published_at}`);
+                    }
+                    else if (shortInfo.microformat?.playerMicroformatRenderer?.uploadDate) {
+                        shortData.published_at = shortInfo.microformat.playerMicroformatRenderer.uploadDate;
+                        console.log(`Using microformat uploadDate for ${short.id}: ${shortData.published_at}`);
+                    }
+                    // 3. Check basic_info
+                    else if (shortInfo.basic_info?.publish_date) {
+                        shortData.published_at = shortInfo.basic_info.publish_date;
+                        console.log(`Using basic_info publish_date for ${short.id}: ${shortData.published_at}`);
+                    }
+                    // 4. Last resort: try to parse from the short's published text
+                    else if (short.published?.text) {
+                        console.log(`No exact date found, falling back to relative date for ${short.id}`);
+                        const publishedText = short.published.text;
+                        console.log(`Raw published date for ${short.id}: ${publishedText}`);
+                        
+                        // Parse the date properly
+                        const parsedDate = parseYouTubeDate(publishedText);
+                        if (parsedDate) {
+                            shortData.published_at = parsedDate;
+                            console.log(`Parsed published date for ${short.id}: ${parsedDate}`);
+                        }
+                    }
+
+                    processedShorts.push(shortData);
+                } catch (error) {
+                    console.error(`Error processing short ${short.id}:`, error);
+                    // Still add the short with basic info even if there was an error
+                    processedShorts.push({
+                        video_id: short.id || short.videoId,
+                        title: short.title?.text || 'Unknown title',
+                        thumbnail_url: `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        error: error.message,
+                        is_short: true
+                    });
+                }
+            }
+
+            // Construct the response
+            const response = {
+                shorts: processedShorts,
+                pagination: {
+                    has_more: currentBatch.has_continuation,
+                    current_page: page,
+                    items_per_page: limit,
+                    total_items: processedShorts.length
+                }
+            };
+            
+            res.json(response);
+        } else {
+            res.json({
+                shorts: [],
+                pagination: {
+                    has_more: false,
+                    current_page: page,
+                    items_per_page: limit,
+                    total_items: 0
+                }
+            });
+        }
     } catch (error) {
         console.error('Error fetching shorts:', error);
         res.status(500).json({ error: error.message });
-    }
-});
-
-// Add a new debug endpoint for shorts
-app.get('/api/debug/shorts/:videoId', async (req, res) => {
-    try {
-        const results = {
-            shortsInfo: null,
-            regularInfo: null,
-            error: null
-        };
-
-        // Try getting shorts-specific info
-        try {
-            const shortsInfo = await yt.getShortsVideoInfo(req.params.videoId);
-            results.shortsInfo = {
-                basic_info: shortsInfo.basic_info,
-                primary_info: shortsInfo.primary_info,
-                secondary_info: shortsInfo.secondary_info,
-                microformat: shortsInfo.microformat,
-                video_details: shortsInfo.video_details,
-                overlay_metadata: shortsInfo.overlay_metadata,
-                published: shortsInfo.published,
-                publishedTimeText: shortsInfo.publishedTimeText,
-                dateText: shortsInfo.dateText,
-                // Include raw data for inspection
-                raw: shortsInfo
-            };
-        } catch (error) {
-            results.error = `Shorts info error: ${error.message}`;
-        }
-
-        // Also try getting regular video info as fallback
-        try {
-            const videoInfo = await yt.getInfo(req.params.videoId);
-            results.regularInfo = {
-                basic_info: videoInfo.basic_info,
-                primary_info: videoInfo.primary_info,
-                secondary_info: videoInfo.secondary_info,
-                microformat: videoInfo.microformat,
-                video_details: videoInfo.video_details,
-                // Include raw data for inspection
-                raw: videoInfo
-            };
-        } catch (error) {
-            if (!results.error) {
-                results.error = `Regular info error: ${error.message}`;
-            }
-        }
-
-        // Send the full response
-        res.header('Content-Type', 'application/json');
-        res.send(JSON.stringify(results, null, 2));
-
-    } catch (error) {
-        res.status(500).json({
-            error: error.message,
-            stack: error.stack
-        });
     }
 });
 
@@ -1591,179 +1815,6 @@ app.get('/api/debug/playlist/:playlistId', async (req, res) => {
         });
     }
 });
-
-// Extract the video fetching logic to a separate function that can be used by both endpoints
-async function getChannelVideos(req, res) {
-    try {
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 30;
-        const type = req.query.type || 'videos';
-        
-        console.log(`Fetching ${type} for channel: ${req.params.channelId} (page ${page})`);
-        const channel = await yt.getChannel(req.params.channelId);
-        
-        // Extract topic channel details if available
-        const topicDetails = await extractTopicChannelDetails(channel);
-        
-        // Get videos/shorts tab
-        const videosTab = type === 'shorts' ? 
-            await channel.getShorts() : 
-            await channel.getVideos();
-
-        console.log(`Found ${videosTab?.videos?.length} ${type}`);
-
-        let currentBatch = videosTab;
-        let currentPage = 1;
-
-        // Skip to requested page
-        while (currentPage < page && currentBatch?.has_continuation) {
-            currentBatch = await currentBatch.getContinuation();
-            currentPage++;
-        }
-
-        // Process current page videos
-        if (currentBatch?.videos) {
-            const videos = currentBatch.videos.slice(0, limit);
-            const processedVideos = [];
-            let videoCount = 0;
-
-            for (const video of videos) {
-                try {
-                    videoCount++;
-                    console.log(`Processing ${type} ${videoCount}/${videos.length}: ${video.id}`);
-
-                    // Get detailed video info
-                    const videoInfo = await yt.getInfo(video.id);
-                    
-                    // Extract basic info
-                    const videoData = {
-                        video_id: video.id || video.videoId,
-                        title: videoInfo.basic_info?.title || video.title?.text || '',
-                        description: videoInfo.basic_info?.description || video.description_snippet?.text || '',
-                        thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
-                                     video.thumbnail?.[0]?.url || 
-                                     `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
-                        published_at: null, // Will be set below
-                        views: videoInfo.basic_info?.view_count || 
-                               video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
-                        channel_id: videoInfo.basic_info?.channel?.id || 
-                                   channel.metadata?.external_id || '',
-                        channel_title: videoInfo.basic_info?.channel?.name || 
-                                      channel.metadata?.title || '',
-                        duration: videoInfo.basic_info?.duration || 
-                                video.duration?.text || '',
-                        is_short: type === 'shorts'
-                    };
-
-                    // Try all possible date fields in order of reliability
-                    
-                    // 1. Check primary_info which has the most accurate dates
-                    if (videoInfo.primary_info?.published?.text) {
-                        const publishedText = videoInfo.primary_info.published.text;
-                        console.log(`Found primary_info published text for ${video.id}: ${publishedText}`);
-                        
-                        // Try to parse as exact date first
-                        try {
-                            const date = new Date(publishedText);
-                            if (!isNaN(date.getTime())) {
-                                videoData.published_at = date.toISOString();
-                                console.log(`Parsed primary_info date for ${video.id}: ${videoData.published_at}`);
-                            }
-                        } catch (e) {
-                            console.log(`Could not parse primary_info date as exact date: ${e.message}`);
-                        }
-                    }
-                    // 2. Check microformat which often has exact dates
-                    else if (videoInfo.microformat?.playerMicroformatRenderer?.publishDate) {
-                        videoData.published_at = videoInfo.microformat.playerMicroformatRenderer.publishDate;
-                        console.log(`Using microformat publishDate for ${video.id}: ${videoData.published_at}`);
-                    }
-                    else if (videoInfo.microformat?.playerMicroformatRenderer?.uploadDate) {
-                        videoData.published_at = videoInfo.microformat.playerMicroformatRenderer.uploadDate;
-                        console.log(`Using microformat uploadDate for ${video.id}: ${videoData.published_at}`);
-                    }
-                    // 3. Check basic_info
-                    else if (videoInfo.basic_info?.publish_date) {
-                        videoData.published_at = videoInfo.basic_info.publish_date;
-                        console.log(`Using basic_info publish_date for ${video.id}: ${videoData.published_at}`);
-                    }
-                    // 4. Check date_text in primary_info
-                    else if (videoInfo.primary_info?.date_text?.simpleText) {
-                        const dateText = videoInfo.primary_info.date_text.simpleText;
-                        console.log(`Found primary_info date_text for ${video.id}: ${dateText}`);
-                        
-                        // Try to parse as exact date
-                        try {
-                            const date = new Date(dateText);
-                            if (!isNaN(date.getTime())) {
-                                videoData.published_at = date.toISOString();
-                                console.log(`Parsed date_text for ${video.id}: ${videoData.published_at}`);
-                            }
-                        } catch (e) {
-                            console.log(`Could not parse date_text as exact date: ${e.message}`);
-                        }
-                    }
-                    // 5. Last resort: try to parse from the video's published text
-                    else if (video.published?.text) {
-                        console.log(`No exact date found, falling back to relative date for ${video.id}`);
-                        const publishedText = video.published.text;
-                        console.log(`Raw published date for ${video.id}: ${publishedText}`);
-                        
-                        // Parse the date properly
-                        const parsedDate = parseYouTubeDate(publishedText);
-                        if (parsedDate) {
-                            videoData.published_at = parsedDate;
-                            console.log(`Parsed published date for ${video.id}: ${parsedDate}`);
-                        }
-                    }
-
-                    processedVideos.push(videoData);
-                } catch (error) {
-                    console.error(`Error processing ${type} ${video.id}:`, error);
-                    // Still add the video with basic info even if there was an error
-                    processedVideos.push({
-                        video_id: video.id || video.videoId,
-                        title: video.title?.text || 'Unknown title',
-                        thumbnail_url: `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
-                        channel_id: channel.metadata?.external_id || '',
-                        channel_title: channel.metadata?.title || '',
-                        error: error.message
-                    });
-                }
-            }
-
-            // Construct the response
-            const response = {
-                [type]: processedVideos,
-                pagination: {
-                    has_more: currentBatch.has_continuation,
-                    current_page: page,
-                    items_per_page: limit,
-                    total_items: processedVideos.length
-                }
-            };
-            
-            if (topicDetails) {
-                response.topic_details = topicDetails;
-            }
-            
-            res.json(response);
-        } else {
-            res.json({
-                [type]: [],
-                pagination: {
-                    has_more: false,
-                    current_page: page,
-                    items_per_page: limit,
-                    total_items: 0
-                }
-            });
-        }
-    } catch (error) {
-        console.error(`Error fetching ${req.query.type || 'videos'}:`, error);
-        res.status(500).json({ error: error.message });
-    }
-}
 
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
