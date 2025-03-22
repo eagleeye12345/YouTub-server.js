@@ -283,7 +283,7 @@ function getCleanThumbnailUrl(videoId) {
     return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 }
 
-// Modify the channel videos endpoint to include topic info
+// Enhanced video endpoint to extract dates from all possible locations
 app.get('/api/channel/:channelId/videos', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -318,12 +318,43 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
             const processedVideos = [];
             let videoCount = 0;
 
+            // For debugging: Get the first video's full info to examine structure
+            if (videos.length > 0) {
+                try {
+                    const sampleVideoInfo = await yt.getInfo(videos[0].id);
+                    console.log('SAMPLE VIDEO INFO STRUCTURE:');
+                    console.log('Available top-level keys:', Object.keys(sampleVideoInfo));
+                    
+                    // Log primary_info structure if it exists
+                    if (sampleVideoInfo.primary_info) {
+                        console.log('PRIMARY INFO KEYS:', Object.keys(sampleVideoInfo.primary_info));
+                        
+                        // Check for date fields in primary_info
+                        if (sampleVideoInfo.primary_info.date_text) {
+                            console.log('DATE TEXT:', sampleVideoInfo.primary_info.date_text);
+                        }
+                        if (sampleVideoInfo.primary_info.published) {
+                            console.log('PUBLISHED:', sampleVideoInfo.primary_info.published);
+                        }
+                    }
+                    
+                    // Log microformat structure if it exists
+                    if (sampleVideoInfo.microformat?.playerMicroformatRenderer) {
+                        console.log('MICROFORMAT DATE FIELDS:');
+                        console.log('publishDate:', sampleVideoInfo.microformat.playerMicroformatRenderer.publishDate);
+                        console.log('uploadDate:', sampleVideoInfo.microformat.playerMicroformatRenderer.uploadDate);
+                    }
+                } catch (error) {
+                    console.error('Error examining sample video:', error);
+                }
+            }
+
             for (const video of videos) {
                 try {
                     videoCount++;
                     console.log(`Processing video ${videoCount}/${videos.length}: ${video.id}`);
 
-                    // Get detailed video info to ensure we have accurate publish dates
+                    // Get detailed video info
                     const videoInfo = await yt.getInfo(video.id);
                     
                     // Extract basic info
@@ -346,17 +377,55 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                         is_short: type === 'shorts'
                     };
 
-                    // Use the publish_date from videoInfo which is the most reliable source
-                    if (videoInfo.basic_info?.publish_date) {
-                        videoData.published_at = videoInfo.basic_info.publish_date;
-                        console.log(`Using publish_date from videoInfo for ${video.id}: ${videoData.published_at}`);
-                    } 
-                    // If not available, try microformat which also often has accurate dates
-                    else if (videoInfo.microformat?.playerMicroformatRenderer?.publishDate) {
+                    // Try all possible date fields in order of reliability
+                    
+                    // 1. Check microformat which often has exact dates
+                    if (videoInfo.microformat?.playerMicroformatRenderer?.publishDate) {
                         videoData.published_at = videoInfo.microformat.playerMicroformatRenderer.publishDate;
                         console.log(`Using microformat publishDate for ${video.id}: ${videoData.published_at}`);
                     }
-                    // Last resort: try to parse from the text, but this is less reliable
+                    else if (videoInfo.microformat?.playerMicroformatRenderer?.uploadDate) {
+                        videoData.published_at = videoInfo.microformat.playerMicroformatRenderer.uploadDate;
+                        console.log(`Using microformat uploadDate for ${video.id}: ${videoData.published_at}`);
+                    }
+                    // 2. Check basic_info
+                    else if (videoInfo.basic_info?.publish_date) {
+                        videoData.published_at = videoInfo.basic_info.publish_date;
+                        console.log(`Using basic_info publish_date for ${video.id}: ${videoData.published_at}`);
+                    }
+                    // 3. Check primary_info
+                    else if (videoInfo.primary_info?.published?.text) {
+                        const publishedText = videoInfo.primary_info.published.text;
+                        console.log(`Found primary_info published text for ${video.id}: ${publishedText}`);
+                        
+                        // Try to parse as exact date first
+                        try {
+                            const date = new Date(publishedText);
+                            if (!isNaN(date.getTime())) {
+                                videoData.published_at = date.toISOString();
+                                console.log(`Parsed primary_info date for ${video.id}: ${videoData.published_at}`);
+                            }
+                        } catch (e) {
+                            console.log(`Could not parse primary_info date as exact date: ${e.message}`);
+                        }
+                    }
+                    // 4. Check date_text in primary_info
+                    else if (videoInfo.primary_info?.date_text?.simpleText) {
+                        const dateText = videoInfo.primary_info.date_text.simpleText;
+                        console.log(`Found primary_info date_text for ${video.id}: ${dateText}`);
+                        
+                        // Try to parse as exact date
+                        try {
+                            const date = new Date(dateText);
+                            if (!isNaN(date.getTime())) {
+                                videoData.published_at = date.toISOString();
+                                console.log(`Parsed date_text for ${video.id}: ${videoData.published_at}`);
+                            }
+                        } catch (e) {
+                            console.log(`Could not parse date_text as exact date: ${e.message}`);
+                        }
+                    }
+                    // 5. Last resort: try to parse from the video's published text
                     else if (video.published?.text) {
                         console.log(`No exact date found, falling back to relative date for ${video.id}`);
                         const publishedText = video.published.text;
