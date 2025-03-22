@@ -1486,8 +1486,7 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
                     // Get playlist details
                     const playlistDetails = await yt.getPlaylist(playlistId);
                     
-                    // Log the entire playlist details for debugging
-                    console.log(`Full playlist details structure: ${JSON.stringify(Object.keys(playlistDetails))}`);
+                    // Log the entire playlist details structure: ${JSON.stringify(Object.keys(playlistDetails))}`);
                     
                     // Extract release date from playlist details
                     let releaseDate = null;
@@ -1584,18 +1583,34 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
                         }
                     }
                     
-                    // 4. Check in first video's publish date as fallback
+                    // 4. Check in videos' publish dates as a reliable source
                     if (!releaseDate && playlistDetails.videos && playlistDetails.videos.length > 0) {
                         try {
-                            const firstVideo = playlistDetails.videos[0];
-                            const videoInfo = await yt.getInfo(firstVideo.id);
+                            // Get the first few videos to analyze their publish dates
+                            const videosToCheck = playlistDetails.videos.slice(0, 3); // Check first 3 videos
+                            const publishDates = [];
                             
-                            if (videoInfo.basic_info?.publish_date) {
-                                releaseDate = videoInfo.basic_info.publish_date;
-                                console.log('Using first video publish date as fallback:', releaseDate);
+                            for (const video of videosToCheck) {
+                                try {
+                                    const videoInfo = await yt.getInfo(video.id);
+                                    
+                                    if (videoInfo.basic_info?.publish_date) {
+                                        publishDates.push(videoInfo.basic_info.publish_date);
+                                        console.log(`Video ${video.id} publish date:`, videoInfo.basic_info.publish_date);
+                                    }
+                                } catch (videoError) {
+                                    console.error(`Error getting video info for ${video.id}:`, videoError.message);
+                                }
+                            }
+                            
+                            if (publishDates.length > 0) {
+                                // Sort dates to find the earliest one (likely the album release date)
+                                publishDates.sort();
+                                releaseDate = publishDates[0];
+                                console.log('Using earliest video publish date as release date:', releaseDate);
                             }
                         } catch (error) {
-                            console.error('Error getting first video info:', error.message);
+                            console.error('Error analyzing video publish dates:', error.message);
                         }
                     }
                     
