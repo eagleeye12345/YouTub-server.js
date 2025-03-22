@@ -1,945 +1,1607 @@
-<?php
-require '../config/config.php';
+import express from 'express';
+import { Innertube } from 'youtubei.js';
+import cors from 'cors';
 
-// Set the maximum execution time to 30 minutes
-set_time_limit(1800);
+const app = express();
+const port = process.env.PORT || 3000;
 
-// Increase memory limit if needed
-ini_set('memory_limit', '512M');
-ini_set('max_execution_time', 1800);
+// Enable CORS
+app.use(cors());
+app.use(express.json());
 
-// Also add this to prevent client timeout
-ini_set('default_socket_timeout', 600);
+// Initialize YouTube client
+let yt = null;
+let ytInitialized = false;
 
-// Define the new API base URL
-define('API_BASE_URL', 'https://graceful-emera-videovinkel-8402d192.koyeb.app/api');
-
-// Add this at the top of the file after require statements
-if (!file_exists('../logs')) {
-    mkdir('../logs', 0777, true);
+async function initializeYouTube() {
+    try {
+        yt = await Innertube.create({
+            cache: false,
+            generate_session_locally: true
+        });
+        ytInitialized = true;
+        console.log('YouTube client initialized successfully');
+    } catch (error) {
+        console.error('Failed to initialize YouTube client:', error);
+        throw error;
+    }
 }
-define('LOG_FILE', '../logs/fetch_videos.log');
 
-function log_message($message, $type = 'INFO') {
-    $date = date('Y-m-d H:i:s');
-    $log_message = "[$date] [$type] $message" . PHP_EOL;
-    error_log($log_message, 3, LOG_FILE);
-}
-
-// Function to make API requests
-function make_api_request($endpoint, $params = [], $retries = 3) {
-    $attempt = 0;
-    while ($attempt < $retries) {
+// Middleware to check if YouTube client is initialized
+const checkYouTubeClient = async (req, res, next) => {
+    if (!ytInitialized) {
         try {
-            $url = API_BASE_URL . $endpoint;
-            if (!empty($params)) {
-                $url .= '?' . http_build_query($params);
-            }
-            
-            log_message("Attempting request to: $url (attempt " . ($attempt + 1) . ")");
-            
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, $url);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 300);
-            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 60);
-            
-            // Add compression to reduce data transfer time
-            curl_setopt($ch, CURLOPT_ENCODING, 'gzip,deflate');
-            
-            // Add keep-alive
-            curl_setopt($ch, CURLOPT_TCP_KEEPALIVE, 1);
-            curl_setopt($ch, CURLOPT_TCP_KEEPIDLE, 60);
-            
-            $response = curl_exec($ch);
-            
-            if (curl_errno($ch)) {
-                throw new Exception(curl_error($ch));
-            }
-            
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-            
-            if ($httpCode === 524) {
-                throw new Exception("Timeout error (524) - retrying...");
-            }
-            
-            if ($httpCode !== 200) {
-                throw new Exception("HTTP error $httpCode");
-            }
-            
-            $decoded = json_decode($response, true);
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                throw new Exception('Invalid JSON response: ' . json_last_error_msg());
-            }
-            
-            return $decoded;
-        } catch (Exception $e) {
-            log_message("Request failed (attempt " . ($attempt + 1) . "): " . $e->getMessage(), 'ERROR');
-            $attempt++;
-            
-            if ($attempt >= $retries) {
-                throw new Exception("Failed after $retries attempts: " . $e->getMessage());
-            }
-            
-            // Wait before retrying (exponential backoff)
-            $waitTime = pow(2, $attempt) * 1000000; // microseconds
-            usleep($waitTime);
+            await initializeYouTube();
+        } catch (error) {
+            return res.status(500).json({ error: 'YouTube client not initialized' });
         }
+    }
+    next();
+};
+
+// Apply the middleware to all routes except health check
+app.use('/api/*', checkYouTubeClient);
+
+// Basic health check endpoint
+app.get('/', (req, res) => {
+    res.json({ status: 'YouTube API service is running' });
+});
+
+// Get channel info endpoint
+app.get('/api/channel/:channelId', async (req, res) => {
+    try {
+        console.log('Fetching channel:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Extract channel info from metadata and header
+        const channelInfo = {
+            id: channel.metadata.external_id,
+            title: channel.metadata.title,
+            description: channel.metadata.description,
+            thumbnail_url: channel.metadata.avatar?.[0]?.url || 
+                         channel.metadata.thumbnail?.[0]?.url || 
+                         channel.header?.author?.thumbnail?.[0]?.url,
+            banner_url: channel.header?.banner?.desktop?.[0]?.url ||
+                       channel.header?.banner?.mobile?.[0]?.url ||
+                       channel.header?.banner?.tv?.[0]?.url ||
+                       channel.header?.content?.banner?.image?.[0]?.url
+        };
+
+        // Extract topic channel details if available
+        const topicDetails = await extractTopicChannelDetails(channel);
+        if (topicDetails) {
+            channelInfo.topic_details = topicDetails;
+        }
+
+        // Extract related channels/artists in metadata
+        if (channel.metadata?.related_channels?.length) {
+            channelInfo.related_channels = channel.metadata.related_channels.map(relatedChannel => ({
+                id: relatedChannel.id || relatedChannel.channel_id || '',
+                title: relatedChannel.title?.text || relatedChannel.name || '',
+                thumbnail_url: relatedChannel.thumbnail?.[0]?.url || 
+                              relatedChannel.avatar?.[0]?.url || ''
+            }));
+        }
+
+        // Log the extracted info
+        console.log('Extracted channel info:', JSON.stringify(channelInfo, null, 2));
+
+        if (!channelInfo.id || !channelInfo.title) {
+            console.error('Missing required channel info:', channelInfo);
+            throw new Error('Could not extract required channel information');
+        }
+
+        res.json(channelInfo);
+    } catch (error) {
+        console.error('Channel error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get video info endpoint
+app.get('/api/video/:videoId', async (req, res) => {
+  try {
+    const videoInfo = await yt.getInfo(req.params.videoId);
+    const simplifiedInfo = {
+      video_id: videoInfo.basic_info.id,
+      title: videoInfo.basic_info.title,
+      description: videoInfo.basic_info.description,
+      thumbnail_url: videoInfo.basic_info.thumbnail[0].url,
+      views: videoInfo.basic_info.view_count,
+      published_at: videoInfo.basic_info.publish_date,
+      channel_id: videoInfo.basic_info.channel?.id,
+      channel_title: videoInfo.basic_info.channel?.name,
+      channel_thumbnail: videoInfo.basic_info.channel?.thumbnails?.[0]?.url
+    };
+    res.json(simplifiedInfo);
+  } catch (error) {
+    console.error('Video error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Helper function to parse YouTube relative time
+function parseYouTubeDate(dateStr) {
+    try {
+        if (!dateStr) return null;
+
+        // If it's already an ISO date string, return it
+        if (dateStr.includes('T') && dateStr.includes('Z')) {
+            return dateStr;
+        }
+
+        // Handle "Streamed X time ago" format
+        dateStr = dateStr.replace(/^Streamed\s+/, '');
+        
+        // Handle "Premiered X time ago" format
+        dateStr = dateStr.replace(/^Premiered\s+/, '');
+
+        // Handle relative dates like "X years/months/weeks/days ago"
+        const matches = dateStr.match(/(\d+)\s+(year|month|week|day|hour|minute|second)s?\s+ago/i);
+        
+        if (matches) {
+            const amount = parseInt(matches[1]);
+            const unit = matches[2].toLowerCase();
+            
+            const now = new Date();
+            const date = new Date();
+            
+            switch (unit) {
+                case 'year':
+                    date.setFullYear(date.getFullYear() - amount);
+                    break;
+                case 'month':
+                    date.setMonth(date.getMonth() - amount);
+                    break;
+                case 'week':
+                    date.setDate(date.getDate() - (amount * 7));
+                    break;
+                case 'day':
+                    date.setDate(date.getDate() - amount);
+                    break;
+                case 'hour':
+                    date.setHours(date.getHours() - amount);
+                    break;
+                case 'minute':
+                    date.setMinutes(date.getMinutes() - amount);
+                    break;
+                case 'second':
+                    date.setSeconds(date.getSeconds() - amount);
+                    break;
+            }
+            
+            return date.toISOString();
+        }
+
+        // Try parsing as a regular date
+        const parsedDate = new Date(dateStr);
+        if (!isNaN(parsedDate.getTime())) {
+            return parsedDate.toISOString();
+        }
+
+        return null;
+    } catch (error) {
+        console.error('Error parsing date:', dateStr, error);
+        return null;
     }
 }
 
-// Function to save video to database
-function save_video($conn, $video_id, $title, $description, $published_at, $thumbnail_url, $channel_id, $views, $is_short) {
+// Add debug logging helper
+function debugLogObject(prefix, obj) {
+    console.log(`${prefix}:`, JSON.stringify(obj, null, 2));
+}
+
+// Update the extractPublishedDate function with more paths and debugging
+function extractPublishedDate(short) {
     try {
-        // Convert view count from format like "245K" to numeric
-        if (is_string($views)) {
-            // Remove any commas and spaces first
-            $views = str_replace([',', ' '], '', $views);
+        console.log('Extracting date from:', JSON.stringify({
+            regularInfo_path: short?.regularInfo?.primary_info?.published?.text,
+            primary_info_path: short?.primary_info?.published?.text,
+            raw_path: short?.raw?.primary_info?.published?.text,
+            relative_date: short?.primary_info?.relative_date?.text
+        }, null, 2));
+
+        // Check regularInfo path first
+        if (short?.regularInfo?.primary_info?.published?.text) {
+            const dateStr = short.regularInfo.primary_info.published.text;
+            console.log('Found date in regularInfo:', dateStr);
+            const parsedDate = new Date(dateStr);
+            if (!isNaN(parsedDate.getTime())) {
+                return parsedDate.toISOString();
+            }
+        }
+
+        // Check primary_info path
+        if (short?.primary_info?.published?.text) {
+            const dateStr = short.primary_info.published.text;
+            console.log('Found date in primary_info:', dateStr);
+            const parsedDate = new Date(dateStr);
+            if (!isNaN(parsedDate.getTime())) {
+                return parsedDate.toISOString();
+            }
+        }
+
+        // Check raw data path
+        if (short?.raw?.primary_info?.published?.text) {
+            const dateStr = short.raw.primary_info.published.text;
+            console.log('Found date in raw data:', dateStr);
+            const parsedDate = new Date(dateStr);
+            if (!isNaN(parsedDate.getTime())) {
+                return parsedDate.toISOString();
+            }
+        }
+
+        return null;
+    } catch (error) {
+        console.error('Error extracting published date:', error);
+        return null;
+    }
+}
+
+// Update extractViews function
+function extractViews(short) {
+    try {
+        // First try accessibility text as it's most reliable for shorts
+        if (short.accessibility_text) {
+            const viewMatch = short.accessibility_text.match(/([0-9,.]+[KMB]?)\s*views?/i);
+            if (viewMatch) {
+                console.log('Found views in accessibility text:', viewMatch[1]);
+                return viewMatch[1].replace(/,/g, '');
+            }
+        }
+
+        // Try overlay stats
+        if (short.overlay_stats?.[0]?.text?.simpleText) {
+            const viewText = short.overlay_stats[0].text.simpleText;
+            console.log('Found views in overlay stats:', viewText);
+            return viewText.replace(/[^0-9.KMB]/gi, '');
+        }
+
+        // Try engagement panels
+        if (short.engagement_panels?.[0]?.engagementPanelSectionListRenderer?.content?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
+            const viewText = short.engagement_panels[0].engagementPanelSectionListRenderer.content.viewCount.videoViewCountRenderer.viewCount.simpleText;
+            console.log('Found views in engagement panel:', viewText);
+            return viewText.replace(/[^0-9.KMB]/gi, '');
+        }
+
+        // Try video primary info
+        if (short.primary_info?.viewCount?.videoViewCountRenderer?.viewCount?.simpleText) {
+            const viewText = short.primary_info.viewCount.videoViewCountRenderer.viewCount.simpleText;
+            console.log('Found views in primary info:', viewText);
+            return viewText.replace(/[^0-9.KMB]/gi, '');
+        }
+
+        return '0';
+    } catch (error) {
+        console.error('Error extracting views:', error);
+        return '0';
+    }
+}
+
+// Helper function to get a clean thumbnail URL
+function getCleanThumbnailUrl(videoId) {
+    return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+}
+
+// Modify the channel videos endpoint to include topic info
+app.get('/api/channel/:channelId/videos', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 30;
+        const type = req.query.type || 'videos';
+        
+        console.log(`Fetching ${type} for channel: ${req.params.channelId} (page ${page})`);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Extract topic channel details if available
+        const topicDetails = await extractTopicChannelDetails(channel);
+        
+        // Get videos/shorts tab
+        const videosTab = type === 'shorts' ? 
+            await channel.getShorts() : 
+            await channel.getVideos();
+
+        console.log(`Found ${videosTab?.videos?.length} videos`);
+
+        let currentBatch = videosTab;
+        let currentPage = 1;
+
+        // Skip to requested page
+        while (currentPage < page && currentBatch?.has_continuation) {
+            currentBatch = await currentBatch.getContinuation();
+            currentPage++;
+        }
+
+        // Process current page videos in parallel
+        if (currentBatch?.videos) {
+            const videos = currentBatch.videos.slice(0, limit);
+            const processedVideos = [];
+            let videoCount = 0;
+
+            for (const video of videos) {
+                try {
+                    videoCount++;
+                    console.log(`Processing video ${videoCount}/${videos.length}: ${video.id}`);
+
+                    // Extract basic info without additional API calls when possible
+                    const videoData = {
+                        video_id: video.id || video.videoId,
+                        title: video.title?.text || '',
+                        description: video.description_snippet?.text || '',
+                        thumbnail_url: video.thumbnail?.[0]?.url || 
+                                     `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
+                        published_at: video.published?.text ? 
+                                     parseYouTubeDate(video.published.text) : null,
+                        views: video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        duration: video.duration?.text || '',
+                        is_short: type === 'shorts'
+                    };
+
+                    // Only fetch additional info if basic data is missing
+                    if (!videoData.title || !videoData.published_at) {
+                        const additionalInfo = type === 'shorts' ?
+                            await yt.getShortsVideoInfo(video.id) :
+                            await yt.getInfo(video.id);
+                        
+                        videoData.title = videoData.title || additionalInfo.basic_info?.title;
+                        videoData.description = videoData.description || additionalInfo.basic_info?.description;
+                        videoData.published_at = videoData.published_at || 
+                            parseYouTubeDate(additionalInfo.basic_info?.publish_date);
+                    }
+
+                    processedVideos.push(videoData);
+                } catch (error) {
+                    console.error(`Error processing video: ${error.message}`);
+                    continue;
+                }
+            }
+
+            console.log(`Successfully processed ${processedVideos.length} videos`);
+            return res.json({
+                videos: processedVideos,
+                topic_details: topicDetails,
+                pagination: {
+                    has_more: currentBatch.has_continuation,
+                    current_page: page,
+                    items_per_page: limit,
+                    total_items: processedVideos.length
+                }
+            });
+        }
+
+        res.json({
+            videos: [],
+            topic_details: topicDetails,
+            pagination: { has_more: false }
+        });
+
+    } catch (error) {
+        console.error('Channel videos error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Search endpoint
+app.get('/api/search', async (req, res) => {
+  try {
+    const query = req.query.q;
+    if (!query) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+    const results = await yt.search(query);
+    const simplifiedResults = results.videos.map(video => ({
+      video_id: video.id,
+      title: video.title?.text || '',
+      description: video.description?.text || '',
+      thumbnail_url: video.thumbnails?.[0]?.url || '',
+      published_at: video.published?.text || '',
+      views: video.view_count?.text || '0',
+      channel_id: video.channel?.id,
+      channel_title: video.channel?.name,
+      channel_thumbnail: video.channel?.thumbnails?.[0]?.url
+    }));
+    res.json(simplifiedResults);
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get playlist endpoint
+app.get('/api/playlist/:playlistId', async (req, res) => {
+  try {
+    const playlist = await yt.getPlaylist(req.params.playlistId);
+    res.json(playlist);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update the shorts processing logic in the /api/shorts/:videoId endpoint
+app.get('/api/shorts/:videoId', async (req, res) => {
+    try {
+        console.log(`Fetching shorts info for: ${req.params.videoId}`);
+        
+        // Get both shorts-specific and regular info
+        let shortInfo = await yt.getShortsVideoInfo(req.params.videoId).catch(() => null);
+        let regularInfo = await yt.getInfo(req.params.videoId).catch(() => null);
+        
+        // Combine the info objects
+        const combinedInfo = {
+            ...shortInfo,
+            regularInfo: regularInfo,
+            basic_info: shortInfo?.basic_info || regularInfo?.basic_info || {},
+            primary_info: regularInfo?.primary_info || shortInfo?.primary_info
+        };
+
+        // Extract simplified info
+        const simplifiedInfo = {
+            video_id: req.params.videoId,
+            title: combinedInfo.basic_info?.title || '',
+            description: combinedInfo.basic_info?.description || '',
+            // Always use the clean thumbnail URL format
+            thumbnail_url: getCleanThumbnailUrl(req.params.videoId),
+            views: extractViews(combinedInfo) || '0',
+            published_at: extractPublishedDate(combinedInfo),
+            channel_id: combinedInfo.basic_info?.channel?.id,
+            channel_title: combinedInfo.basic_info?.channel?.name,
+            channel_thumbnail: combinedInfo.basic_info?.channel?.thumbnails?.[0]?.url,
+            duration: combinedInfo.basic_info?.duration?.text || '',
+            is_short: true,
+            playability_status: combinedInfo.playability_status
+        };
+
+        console.log('Final simplified info:', JSON.stringify(simplifiedInfo, null, 2));
+        res.json(simplifiedInfo);
+    } catch (error) {
+        console.error('Shorts error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update the channel shorts endpoint
+app.get('/api/channel/:channelId/shorts', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 30;
+        
+        console.log(`Fetching shorts for channel: ${req.params.channelId} (page ${page})`);
+        
+        // Get channel
+        const channel = await yt.getChannel(req.params.channelId);
+
+        if (!channel.has_shorts) {
+            console.log('No shorts found for channel');
+            return res.json({
+                shorts: [],
+                pagination: { 
+                    has_more: false,
+                    current_page: page,
+                    items_per_page: limit,
+                    total_items: 0
+                }
+            });
+        }
+
+        // Get shorts tab
+        const shortsTab = await channel.getShorts();
+        console.log(`Found ${shortsTab?.videos?.length} shorts`);
+
+        let currentBatch = shortsTab;
+        let allShorts = [];
+
+        // Collect all shorts up to the requested page
+        for (let currentPage = 1; currentPage <= page; currentPage++) {
+            if (currentBatch?.videos?.length) {
+                allShorts = allShorts.concat(currentBatch.videos);
+            }
+
+            if (currentPage < page && currentBatch?.has_continuation) {
+                currentBatch = await currentBatch.getContinuation();
+            }
+        }
+
+        // Calculate the slice for the current page
+        const startIndex = (page - 1) * limit;
+        const endIndex = startIndex + limit;
+        const shortsForCurrentPage = allShorts.slice(startIndex, endIndex);
+
+        // Process shorts
+        const processedShorts = [];
+        let shortCount = 0;
+        for (const short of shortsForCurrentPage) {
+            try {
+                const videoId = short.on_tap_endpoint?.payload?.videoId;
+                if (!videoId) continue;
+
+                shortCount++;
+                console.log(`Processing short ${shortCount}/${shortsForCurrentPage.length}: ${videoId}`);
+
+                // Try to get shorts info, but handle parsing errors gracefully
+                let shortInfo = null;
+                try {
+                    shortInfo = await yt.getShortsVideoInfo(videoId);
+                } catch (error) {
+                    console.log(`Error getting shorts info for ${videoId}: ${error.message}`);
+                    // Continue with shortInfo as null
+                }
+
+                // Try to get regular info as fallback, but handle parsing errors gracefully
+                let regularInfo = null;
+                try {
+                    regularInfo = await yt.getInfo(videoId);
+                } catch (error) {
+                    console.log(`Error getting regular info for ${videoId}: ${error.message}`);
+                    // Continue with regularInfo as null
+                }
+
+                // If both API calls failed, extract basic info from the short object
+                if (!shortInfo && !regularInfo) {
+                    console.log(`Using fallback data extraction for ${videoId}`);
+                    
+                    const shortData = {
+                        video_id: videoId,
+                        title: short.overlay_metadata?.primary_text?.text || 
+                               short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
+                        description: '',
+                        thumbnail_url: getCleanThumbnailUrl(videoId),
+                        published_at: null,
+                        views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        duration: '',
+                        is_short: true
+                    };
+                    
+                    processedShorts.push(shortData);
+                    continue;
+                }
+
+                // Combine the info objects
+                const combinedInfo = {
+                    ...shortInfo,
+                    regularInfo: regularInfo,
+                    raw: shortInfo || regularInfo,
+                    primary_info: regularInfo?.primary_info || shortInfo?.primary_info
+                };
+
+                // Get exact view count
+                let viewCount = '';
+                if (regularInfo?.primary_info?.view_count?.view_count?.text) {
+                    // Use exact view count from view_count.text (e.g., "245,906 views")
+                    viewCount = regularInfo.primary_info.view_count.view_count.text.replace(/[^0-9]/g, '');
+                } else if (regularInfo?.primary_info?.view_count?.original_view_count) {
+                    // Try original_view_count as backup
+                    viewCount = regularInfo.primary_info.view_count.original_view_count;
+                } else if (regularInfo?.basic_info?.view_count) {
+                    // Fallback to basic_info view count
+                    viewCount = regularInfo.basic_info.view_count.toString();
+                } else if (short.overlay_metadata?.secondary_text?.text) {
+                    // Fallback to overlay metadata
+                    viewCount = short.overlay_metadata.secondary_text.text.replace(/[^0-9.KMB]/gi, '');
+                } else if (short.accessibility_text) {
+                    // Last resort: try to extract from accessibility text
+                    const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i);
+                    viewCount = viewMatch ? viewMatch[1] : '0';
+                }
+
+                // Extract data directly from the combined info
+                const shortData = {
+                    video_id: videoId,
+                    title: short.overlay_metadata?.primary_text?.text || 
+                           combinedInfo.basic_info?.title ||
+                           short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
+                    description: combinedInfo.basic_info?.description || '',
+                    // Always use the clean thumbnail URL format
+                    thumbnail_url: getCleanThumbnailUrl(videoId),
+                    published_at: regularInfo?.primary_info?.published?.text ? 
+                                 new Date(regularInfo.primary_info.published.text).toISOString() : null,
+                    views: viewCount,
+                    channel_id: channel.metadata?.external_id || '',
+                    channel_title: channel.metadata?.title || '',
+                    duration: combinedInfo.basic_info?.duration?.text || '',
+                    is_short: true
+                };
+
+                processedShorts.push(shortData);
+
+            } catch (error) {
+                console.error(`Error processing short: ${error.message}`);
+                continue;
+            }
+        }
+
+        console.log(`Successfully processed ${processedShorts.length} shorts`);
+        res.json({
+            shorts: processedShorts,
+            pagination: {
+                has_more: currentBatch?.has_continuation || false,
+                current_page: page,
+                items_per_page: limit,
+                total_items: processedShorts.length
+            }
+        });
+
+    } catch (error) {
+        console.error('Channel shorts error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Add a new debug endpoint for shorts
+app.get('/api/debug/shorts/:videoId', async (req, res) => {
+    try {
+        const results = {
+            shortsInfo: null,
+            regularInfo: null,
+            error: null
+        };
+
+        // Try getting shorts-specific info
+        try {
+            const shortsInfo = await yt.getShortsVideoInfo(req.params.videoId);
+            results.shortsInfo = {
+                basic_info: shortsInfo.basic_info,
+                primary_info: shortsInfo.primary_info,
+                secondary_info: shortsInfo.secondary_info,
+                microformat: shortsInfo.microformat,
+                video_details: shortsInfo.video_details,
+                overlay_metadata: shortsInfo.overlay_metadata,
+                published: shortsInfo.published,
+                publishedTimeText: shortsInfo.publishedTimeText,
+                dateText: shortsInfo.dateText,
+                // Include raw data for inspection
+                raw: shortsInfo
+            };
+        } catch (error) {
+            results.error = `Shorts info error: ${error.message}`;
+        }
+
+        // Also try getting regular video info as fallback
+        try {
+            const videoInfo = await yt.getInfo(req.params.videoId);
+            results.regularInfo = {
+                basic_info: videoInfo.basic_info,
+                primary_info: videoInfo.primary_info,
+                secondary_info: videoInfo.secondary_info,
+                microformat: videoInfo.microformat,
+                video_details: videoInfo.video_details,
+                // Include raw data for inspection
+                raw: videoInfo
+            };
+        } catch (error) {
+            if (!results.error) {
+                results.error = `Regular info error: ${error.message}`;
+            }
+        }
+
+        // Send the full response
+        res.header('Content-Type', 'application/json');
+        res.send(JSON.stringify(results, null, 2));
+
+    } catch (error) {
+        res.status(500).json({
+            error: error.message,
+            stack: error.stack
+        });
+    }
+});
+
+// Get topic channel info endpoint
+app.get('/api/topic/:topicId', async (req, res) => {
+    try {
+        console.log('Fetching topic channel:', req.params.topicId);
+        
+        // Topic IDs are usually in the format "UC..." or "FEmusic_channel..."
+        const topicChannel = await yt.getChannel(req.params.topicId);
+        
+        // Extract basic topic channel info
+        const topicInfo = {
+            id: topicChannel.metadata.external_id,
+            title: topicChannel.metadata.title,
+            description: topicChannel.metadata.description,
+            thumbnail_url: topicChannel.metadata.avatar?.[0]?.url || 
+                          topicChannel.metadata.thumbnail?.[0]?.url,
+            banner_url: topicChannel.header?.banner?.desktop?.[0]?.url,
+            is_artist_channel: topicChannel.metadata?.is_artist || false
+        };
+        
+        // Extract related channels/artists if available
+        if (topicChannel.metadata?.related_channels?.length) {
+            topicInfo.related_channels = topicChannel.metadata.related_channels.map(relatedChannel => ({
+                id: relatedChannel.id || relatedChannel.channel_id || '',
+                title: relatedChannel.title?.text || relatedChannel.name || '',
+                thumbnail_url: relatedChannel.thumbnail?.[0]?.url || 
+                              relatedChannel.avatar?.[0]?.url || ''
+            }));
+        }
+        
+        // Extract featured content if available
+        if (topicChannel.sections?.length) {
+            topicInfo.sections = [];
             
-            // Extract the numeric part and the suffix
-            if (preg_match('/^(\d+\.?\d*)([KMB])?$/i', $views, $matches)) {
-                $number = floatval($matches[1]);
-                $suffix = strtoupper($matches[2] ?? '');
+            for (const section of topicChannel.sections) {
+                if (section.title?.text) {
+                    const sectionData = {
+                        title: section.title.text,
+                        items: []
+                    };
+                    
+                    // Extract items from the section (videos, playlists, etc.)
+                    if (section.contents?.length) {
+                        for (const content of section.contents) {
+                            // Handle different content types
+                            if (content.video_renderer || content.grid_video_renderer) {
+                                const videoRenderer = content.video_renderer || content.grid_video_renderer;
+                                sectionData.items.push({
+                                    type: 'video',
+                                    id: videoRenderer.video_id,
+                                    title: videoRenderer.title?.text || '',
+                                    thumbnail_url: videoRenderer.thumbnail?.[0]?.url || ''
+                                });
+                            } else if (content.playlist_renderer) {
+                                sectionData.items.push({
+                                    type: 'playlist',
+                                    id: content.playlist_renderer.playlist_id,
+                                    title: content.playlist_renderer.title?.text || '',
+                                    thumbnail_url: content.playlist_renderer.thumbnail?.[0]?.url || ''
+                                });
+                            }
+                        }
+                    }
+                    
+                    topicInfo.sections.push(sectionData);
+                }
+            }
+        }
+        
+        console.log('Extracted topic info:', JSON.stringify(topicInfo, null, 2));
+        res.json(topicInfo);
+    } catch (error) {
+        console.error('Topic channel error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update the extractTopicChannelDetails function to include the new approach
+async function extractTopicChannelDetails(channel) {
+    // First try the existing methods
+    let topicDetails = null;
+    
+    // Check in header
+    if (channel.header?.topic_channel_details) {
+        topicDetails = channel.header.topic_channel_details;
+    }
+    // Check in metadata
+    else if (channel.metadata?.topic_channel_details) {
+        topicDetails = channel.metadata.topic_channel_details;
+    }
+    // Check in header content
+    else if (channel.header?.content?.topic_channel_details) {
+        topicDetails = channel.header.content.topic_channel_details;
+    }
+    // Check in tabs
+    else if (channel.tabs && Array.isArray(channel.tabs)) {
+        // Look through tabs for topic information
+        for (const tab of channel.tabs) {
+            if (tab.topic_channel_details) {
+                topicDetails = tab.topic_channel_details;
+                break;
+            }
+        }
+    }
+    
+    // If we still don't have topic details, try the new approach with playlists
+    if (!topicDetails) {
+        const playlistTopicDetails = await extractTopicChannelFromPlaylists(channel);
+        if (playlistTopicDetails) {
+            return playlistTopicDetails;
+        }
+    }
+    
+    // If we still don't have topic details, try to access the Releases tab
+    if (!topicDetails) {
+        try {
+            // Try to access the Releases tab
+            const releasesTab = await channel.getTabByName('Releases');
+            if (releasesTab) {
+                console.log('Found Releases tab, checking for topic channel details');
                 
-                switch ($suffix) {
-                    case 'K':
-                        $number *= 1000;
-                        break;
-                    case 'M':
-                        $number *= 1000000;
-                        break;
-                    case 'B':
-                        $number *= 1000000000;
-                        break;
+                // Check if the tab itself has topic_channel_details
+                if (releasesTab.topic_channel_details) {
+                    topicDetails = releasesTab.topic_channel_details;
+                }
+                // Check in the shelves of the Releases tab
+                else if (releasesTab.shelves && releasesTab.shelves.length) {
+                    for (const shelf of releasesTab.shelves) {
+                        // Look for shelves with albums or music
+                        const shelfTitle = shelf.title?.text || '';
+                        if (shelfTitle.toLowerCase().includes('album') || 
+                            shelfTitle.toLowerCase().includes('music') ||
+                            shelfTitle.toLowerCase().includes('single')) {
+                            
+                            // If we find a music-related shelf, check its endpoint
+                            if (shelf.endpoint?.browse_endpoint?.browse_id) {
+                                // This might be a topic channel ID
+                                const potentialTopicId = shelf.endpoint.browse_endpoint.browse_id;
+                                if (potentialTopicId.startsWith('UC') || 
+                                    potentialTopicId.includes('music_channel')) {
+                                    
+                                    return {
+                                        title: `${channel.metadata?.title || ''} - Topic`,
+                                        subtitle: 'Music Artist',
+                                        endpoint: potentialTopicId
+                                    };
+                                }
+                            }
+                            
+                            // Also check the items in the shelf
+                            if (shelf.items && shelf.items.length) {
+                                for (const item of shelf.items) {
+                                    // Albums often have navigation endpoints to the topic channel
+                                    if (item.endpoint?.browse_endpoint?.browse_id) {
+                                        const browseId = item.endpoint.browse_endpoint.browse_id;
+                                        if (browseId.startsWith('UC') || 
+                                            browseId.includes('music_channel')) {
+                                            
+                                            return {
+                                                title: `${channel.metadata?.title || ''} - Topic`,
+                                                subtitle: 'Music Artist',
+                                                endpoint: browseId
+                                            };
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.log(`Error accessing Releases tab: ${error.message}`);
+        }
+    }
+    
+    // If we still don't have topic details, check for music shelves in the main channel
+    if (!topicDetails && channel.shelves && channel.shelves.length) {
+        for (const shelf of channel.shelves) {
+            const shelfTitle = shelf.title?.text || '';
+            if (shelfTitle.toLowerCase().includes('music videos')) {
+                console.log('Found music videos shelf, checking for topic channel details');
+                
+                // This shelf might contain links to the topic channel
+                if (shelf.endpoint?.browse_endpoint?.browse_id) {
+                    const browseId = shelf.endpoint.browse_endpoint.browse_id;
+                    if (browseId.startsWith('UC') || browseId.includes('music_channel')) {
+                        return {
+                            title: `${channel.metadata?.title || ''} - Topic`,
+                            subtitle: 'Music Artist',
+                            endpoint: browseId
+                        };
+                    }
                 }
                 
-                $views = floor($number); // Convert to integer
-            } else {
-                // If no suffix found, just convert to integer
-                $views = (int)preg_replace('/[^0-9]/', '', $views);
+                // Check items in the shelf
+                if (shelf.items && shelf.items.length) {
+                    for (const item of shelf.items) {
+                        if (item.endpoint?.browse_endpoint?.browse_id) {
+                            const browseId = item.endpoint.browse_endpoint.browse_id;
+                            if (browseId.startsWith('UC') || browseId.includes('music_channel')) {
+                                return {
+                                    title: `${channel.metadata?.title || ''} - Topic`,
+                                    subtitle: 'Music Artist',
+                                    endpoint: browseId
+                                };
+                            }
+                        }
+                    }
+                }
             }
-            
-            log_message("Converted view count from '{$_views}' to {$views}");
         }
-
-        // Convert published_at to MySQL datetime format if it's an ISO date
-        if ($published_at && strpos($published_at, 'T') !== false) {
-            $date = new DateTime($published_at);
-            $published_at = $date->format('Y-m-d H:i:s');
-        }
-
-        // Ensure title isn't empty
-        $title = trim($title) ?: 'Untitled';
-
-        // Log the processed data
-        log_message("Processing video data: " . json_encode([
-            'video_id' => $video_id,
-            'title' => $title,
-            'published_at' => $published_at,
-            'views' => $views,
-            'is_short' => $is_short,
-            'original_views' => $_views // Log the original value
-        ]));
-
-        // If published_at is NULL, set a default value
-        if ($published_at === null || $published_at === '') {
-            $published_at = date('Y-m-d H:i:s'); // Use current date as fallback
-            log_message("Setting default published_at date for video $video_id: $published_at");
-        }
-
-        // Prepare the SQL statement
-        $stmt = $conn->prepare("INSERT INTO videos 
-            (video_id, title, description, published_at, thumbnail_url, channel_id, views, is_short) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?) 
-            ON DUPLICATE KEY UPDATE 
-            title = VALUES(title), 
-            description = COALESCE(NULLIF(VALUES(description), ''), description),
-            published_at = COALESCE(NULLIF(VALUES(published_at), ''), published_at),
-            thumbnail_url = COALESCE(NULLIF(VALUES(thumbnail_url), ''), thumbnail_url),
-            views = VALUES(views),
-            is_short = VALUES(is_short)");
-        
-        if (!$stmt) {
-            throw new Exception("Failed to prepare statement: " . $conn->error);
-        }
-        
-        $stmt->bind_param("ssssssis", 
-            $video_id, 
-            $title, 
-            $description, 
-            $published_at, 
-            $thumbnail_url, 
-            $channel_id, 
-            $views,
-            $is_short
-        );
-        
-        // Execute and check result
-        $result = $stmt->execute();
-        if (!$result) {
-            throw new Exception("Failed to execute statement: " . $stmt->error);
-        }
-        
-        log_message("Successfully saved/updated video: $video_id");
-        $stmt->close();
-        
-    } catch (Exception $e) {
-        log_message("Database error saving video $video_id: " . $e->getMessage(), 'ERROR');
-        throw $e;
     }
-}
-
-// Function to save channel to database
-function save_channel($conn, $channel_id, $title, $thumbnail_url, $banner_url, $topic_details = null) {
-    // First save the main channel
-    $stmt = $conn->prepare("INSERT INTO channels (channel_id, title, thumbnail_url, banner_url) 
-                           VALUES (?, ?, ?, ?) 
-                           ON DUPLICATE KEY UPDATE 
-                           title=VALUES(title), 
-                           thumbnail_url=VALUES(thumbnail_url), 
-                           banner_url=VALUES(banner_url)");
     
-    if ($stmt) {
-        $stmt->bind_param("ssss", $channel_id, $title, $thumbnail_url, $banner_url);
-        $stmt->execute();
-        $stmt->close();
+    // If we still don't have topic details but the channel has music_artist_name,
+    // we can try to construct a topic channel ID based on the channel ID
+    if (!topicDetails && channel.metadata?.music_artist_name) {
+        // Many topic channels are derived from the original channel ID
+        const channelId = channel.metadata.external_id;
+        if (channelId && channelId.startsWith('UC')) {
+            // Try a common pattern for topic channels
+            return {
+                title: `${channel.metadata.title} - Topic`,
+                subtitle: 'Music Artist',
+                endpoint: channelId,
+                is_derived: true  // Flag to indicate this is a derived ID
+            };
+        }
+    }
+    
+    if (!topicDetails) return null;
+    
+    // Extract the details from the found topic_channel_details
+    return {
+        title: topicDetails.title?.text || '',
+        subtitle: topicDetails.subtitle?.text || '',
+        avatar: topicDetails.avatar?.[0]?.url || '',
+        endpoint: topicDetails.endpoint?.browse_endpoint?.browse_id || 
+                 topicDetails.endpoint?.navigation_endpoint?.browse_id || ''
+    };
+}
+
+// Add a new debug endpoint to help identify topic channels
+app.get('/api/debug/channel/:channelId/topic', async (req, res) => {
+    try {
+        console.log('Debugging topic channel for:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
         
-        // If we have topic details, save them too
-        if ($topic_details && isset($topic_details['title']) && isset($topic_details['endpoint'])) {
-            $topic_id = $topic_details['endpoint'];
-            $topic_title = $topic_details['title'];
-            $topic_subtitle = $topic_details['subtitle'] ?? '';
-            $topic_avatar = $topic_details['avatar'] ?? '';
-            
-            $stmt = $conn->prepare("INSERT INTO topic_channels 
-                                   (channel_id, topic_id, title, subtitle, avatar_url) 
-                                   VALUES (?, ?, ?, ?, ?) 
-                                   ON DUPLICATE KEY UPDATE 
-                                   title=VALUES(title), 
-                                   subtitle=VALUES(subtitle), 
-                                   avatar_url=VALUES(avatar_url)");
-            
-            if ($stmt) {
-                $stmt->bind_param("sssss", $channel_id, $topic_id, $topic_title, $topic_subtitle, $topic_avatar);
-                $stmt->execute();
-                $stmt->close();
-                log_message("Saved topic channel info for: $topic_title (ID: $topic_id)");
+        // Extract all possible locations where topic details might be
+        const debug = {
+            channel_id: req.params.channelId,
+            channel_title: channel.metadata?.title || '',
+            has_header_topic: !!channel.header?.topic_channel_details,
+            has_metadata_topic: !!channel.metadata?.topic_channel_details,
+            has_content_topic: !!channel.header?.content?.topic_channel_details,
+            has_tabs: !!channel.tabs,
+            tabs_count: channel.tabs?.length || 0,
+            has_sections: !!channel.sections,
+            sections_count: channel.sections?.length || 0,
+            topic_details: extractTopicChannelDetails(channel),
+            // Include raw data for inspection
+            header_keys: Object.keys(channel.header || {}),
+            metadata_keys: Object.keys(channel.metadata || {})
+        };
+        
+        // If we found topic details, try to fetch that channel too
+        if (debug.topic_details?.endpoint) {
+            try {
+                const topicChannel = await yt.getChannel(debug.topic_details.endpoint);
+                debug.topic_channel = {
+                    id: topicChannel.metadata?.external_id || '',
+                    title: topicChannel.metadata?.title || '',
+                    is_artist: topicChannel.metadata?.is_artist || false,
+                    is_verified: topicChannel.metadata?.is_verified || false
+                };
+            } catch (error) {
+                debug.topic_channel_error = error.message;
             }
         }
-    } else {
-        throw new Exception("Database error: " . $conn->error);
+        
+        res.json(debug);
+    } catch (error) {
+        console.error('Topic debug error:', error);
+        res.status(500).json({ error: error.message });
     }
-}
+});
 
-// Update fetch_progress table structure
-$sql = "CREATE TABLE IF NOT EXISTS fetch_progress (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    channel_id VARCHAR(30) NOT NULL,
-    type VARCHAR(10) NOT NULL DEFAULT 'videos',
-    page INT NOT NULL DEFAULT 1,
-    status VARCHAR(20) NOT NULL DEFAULT 'pending',
-    items_fetched INT NOT NULL DEFAULT 0,
-    last_error TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY unique_channel_type (channel_id, type)
-)";
-
-try {
-    $conn->query($sql);
-    log_message("Ensured fetch_progress table structure");
-} catch (Exception $e) {
-    log_message("Error creating fetch_progress table: " . $e->getMessage(), 'ERROR');
-}
-
-// Function to get fetch progress
-function get_fetch_progress($conn, $channel_id, $type = 'videos') {
+// Update the debug endpoint to explore all channel tabs
+app.get('/api/debug/channel/:channelId/tabs', async (req, res) => {
     try {
-        $stmt = $conn->prepare("SELECT * FROM fetch_progress WHERE channel_id = ? AND type = ?");
-        $stmt->bind_param("ss", $channel_id, $type);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $progress = $result->fetch_assoc();
-        $stmt->close();
-        return $progress ?: [
-            'channel_id' => $channel_id,
-            'type' => $type,
-            'page' => 1,
-            'status' => 'pending',
-            'items_fetched' => 0
+        console.log('Exploring tabs for channel:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Get basic channel info
+        const channelInfo = {
+            id: channel.metadata?.external_id || '',
+            title: channel.metadata?.title || '',
+            is_music_artist: !!channel.metadata?.music_artist_name,
+            music_artist_name: channel.metadata?.music_artist_name || null
+        };
+        
+        // Get available tab names from the channel object
+        const availableTabs = [];
+        
+        // Check if the channel has the tabs getter
+        if (typeof channel.tabs === 'function' || Array.isArray(channel.tabs)) {
+            const tabNames = Array.isArray(channel.tabs) ? 
+                channel.tabs : 
+                (typeof channel.tabs === 'function' ? channel.tabs() : []);
+            
+            console.log('Available tabs from getter:', tabNames);
+            availableTabs.push(...tabNames);
+        }
+        
+        // Check for tab availability using the has_* properties
+        const tabAvailability = {
+            has_videos: channel.has_videos || false,
+            has_shorts: channel.has_shorts || false,
+            has_releases: channel.has_releases || false,
+            has_podcasts: channel.has_podcasts || false,
+            has_playlists: channel.has_playlists || false,
+            has_search: channel.has_search || false
+        };
+        
+        // Explore all possible tabs
+        const tabsInfo = [];
+        const possibleTabs = [
+            'Home', 'Videos', 'Shorts', 'Live', 'Releases', 
+            'Podcasts', 'Playlists', 'Community', 'Store', 
+            'Channels', 'About', 'Music'
         ];
-    } catch (Exception $e) {
-        log_message("Error getting fetch progress: " . $e->getMessage(), 'ERROR');
-        throw $e;
-    }
-}
-
-// Function to update fetch progress
-function update_fetch_progress($conn, $channel_id, $page, $status, $items_fetched, $type = 'videos', $error = null) {
-    try {
-        $stmt = $conn->prepare("INSERT INTO fetch_progress 
-            (channel_id, type, page, status, items_fetched, last_error) 
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE 
-            page = VALUES(page),
-            status = VALUES(status),
-            items_fetched = VALUES(items_fetched),
-            last_error = VALUES(last_error),
-            updated_at = CURRENT_TIMESTAMP");
         
-        $stmt->bind_param("ssisss", 
-            $channel_id, 
-            $type, 
-            $page, 
-            $status, 
-            $items_fetched, 
-            $error
-        );
+        // Add any tabs we found from the tabs getter
+        possibleTabs.push(...availableTabs.filter(tab => !possibleTabs.includes(tab)));
         
-        $stmt->execute();
-        $stmt->close();
-        
-        log_message("Updated fetch progress for $channel_id ($type): page $page, status $status, items $items_fetched");
-    } catch (Exception $e) {
-        log_message("Error updating fetch progress: " . $e->getMessage(), 'ERROR');
-        throw $e;
-    }
-}
-
-// Modify the fetch_channel_videos function to process in larger batches
-function fetch_channel_videos($channel_id, $resume = true, $type = 'videos') {
-    global $conn;
-    $fetchedCount = 0;
-    $page = 1;
-    $batchSize = 50; // Increased batch size
-    
-    try {
-        // Get existing progress if resuming
-        if ($resume) {
-            $progress = get_fetch_progress($conn, $channel_id, $type);
-            if ($progress['status'] === 'completed') {
-                return $progress['items_fetched'];
+        // Explore each possible tab
+        for (const tabName of possibleTabs) {
+            try {
+                console.log(`Trying to access tab: ${tabName}`);
+                const tab = await channel.getTabByName(tabName);
+                
+                if (tab) {
+                    console.log(`Successfully accessed tab: ${tabName}`);
+                    
+                    const tabInfo = {
+                        name: tabName,
+                        found: true,
+                        has_content: !!tab.page_contents,
+                        content_type: tab.page_contents ? tab.page_contents.type : null,
+                        has_shelves: Array.isArray(tab.shelves) && tab.shelves.length > 0,
+                        shelves_count: Array.isArray(tab.shelves) ? tab.shelves.length : 0,
+                        has_videos: Array.isArray(tab.videos) && tab.videos.length > 0,
+                        videos_count: Array.isArray(tab.videos) ? tab.videos.length : 0,
+                        has_playlists: Array.isArray(tab.playlists) && tab.playlists.length > 0,
+                        playlists_count: Array.isArray(tab.playlists) ? tab.playlists.length : 0
+                    };
+                    
+                    // If this is the Releases tab, explore it in more detail
+                    if (tabName === 'Releases' && tab.shelves && tab.shelves.length) {
+                        tabInfo.shelves = tab.shelves.map(shelf => ({
+                            title: shelf.title?.text || '',
+                            type: shelf.type || '',
+                            items_count: shelf.items?.length || 0,
+                            has_endpoint: !!shelf.endpoint,
+                            endpoint: shelf.endpoint?.browse_endpoint?.browse_id || '',
+                            items_sample: (shelf.items || []).slice(0, 2).map(item => ({
+                                title: item.title?.text || '',
+                                type: item.type || '',
+                                has_endpoint: !!item.endpoint,
+                                endpoint: item.endpoint?.browse_endpoint?.browse_id || ''
+                            }))
+                        }));
+                    }
+                    
+                    tabsInfo.push(tabInfo);
+                }
+            } catch (error) {
+                console.log(`Error accessing tab ${tabName}: ${error.message}`);
+                // Still add the tab to the list, but mark it as not found
+                tabsInfo.push({
+                    name: tabName,
+                    found: false,
+                    error: error.message
+                });
             }
-            $page = $progress['status'] === 'failed' ? 1 : $progress['page'];
-            $fetchedCount = $progress['items_fetched'];
         }
         
-        update_fetch_progress($conn, $channel_id, $page, 'in_progress', $fetchedCount, $type);
-        
-        $hasMore = true;
-        while ($hasMore) {
-            $response = make_api_request("/channel/$channel_id/$type", [
-                'page' => $page,
-                'limit' => $batchSize
-            ]);
-            
-            if (isset($response[$type]) && is_array($response[$type])) {
-                // Prepare batch insert
-                $values = [];
-                $types = '';
-                $params = [];
-                
-                foreach ($response[$type] as $item) {
-                    $values[] = "(?, ?, ?, ?, ?, ?, ?, ?)";
-                    $types .= "ssssssis";
-                    array_push($params,
-                        $item['video_id'],
-                        $item['title'],
-                        $item['description'] ?? '',
-                        $item['published_at'],
-                        $item['thumbnail_url'],
-                        $channel_id,
-                        $item['views'],
-                        $type === 'shorts' ? 1 : 0
-                    );
-                }
-                
-                if (!empty($values)) {
-                    // Batch insert/update
-                    $sql = "INSERT INTO videos 
-                            (video_id, title, description, published_at, thumbnail_url, channel_id, views, is_short)
-                            VALUES " . implode(',', $values) . "
-                            ON DUPLICATE KEY UPDATE
-                            title = VALUES(title),
-                            description = COALESCE(NULLIF(VALUES(description), ''), description),
-                            published_at = COALESCE(NULLIF(VALUES(published_at), ''), published_at),
-                            thumbnail_url = COALESCE(NULLIF(VALUES(thumbnail_url), ''), thumbnail_url),
-                            views = VALUES(views),
-                            is_short = VALUES(is_short)";
+        // Check for music-related content in shelves on the main page
+        const musicShelves = [];
+        if (channel.shelves && channel.shelves.length) {
+            for (const shelf of channel.shelves) {
+                const shelfTitle = shelf.title?.text || '';
+                if (shelfTitle.toLowerCase().includes('music') || 
+                    shelfTitle.toLowerCase().includes('album') || 
+                    shelfTitle.toLowerCase().includes('song')) {
                     
-                    $stmt = $conn->prepare($sql);
-                    $stmt->bind_param($types, ...$params);
-                    $stmt->execute();
-                    $stmt->close();
-                    
-                    $fetchedCount += count($response[$type]);
+                    musicShelves.push({
+                        title: shelfTitle,
+                        type: shelf.type,
+                        items_count: shelf.items?.length || 0,
+                        endpoint: shelf.endpoint?.browse_endpoint?.browse_id || '',
+                        items_sample: (shelf.items || []).slice(0, 2).map(item => ({
+                            title: item.title?.text || '',
+                            type: item.type || '',
+                            has_endpoint: !!item.endpoint,
+                            endpoint: item.endpoint?.browse_endpoint?.browse_id || ''
+                        }))
+                    });
                 }
             }
+        }
+        
+        // Construct the response
+        const response = {
+            channel: channelInfo,
+            tab_availability: tabAvailability,
+            available_tabs: availableTabs,
+            tabs_explored: tabsInfo.length,
+            tabs: tabsInfo,
+            music_shelves: musicShelves
+        };
+        
+        res.json(response);
+    } catch (error) {
+        console.error('Tab exploration error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Add this function to extract topic channel ID from playlists
+async function extractTopicChannelFromPlaylists(channel) {
+    try {
+        console.log('Attempting to extract topic channel from playlists...');
+        
+        // Try to access the Releases tab
+        const releasesTab = await channel.getTabByName('Releases');
+        if (releasesTab && releasesTab.playlists && releasesTab.playlists.length > 0) {
+            console.log(`Found ${releasesTab.playlists.length} playlists in Releases tab`);
             
-            update_fetch_progress($conn, $channel_id, $page, 'in_progress', $fetchedCount, $type);
-            
-            $hasMore = $response['pagination']['has_more'] ?? false;
-            if ($hasMore) {
-                $page++;
-                usleep(100000); // Reduced delay between batches
+            // Examine each playlist for topic channel references
+            for (const playlist of releasesTab.playlists) {
+                console.log(`Examining playlist: ${playlist.title?.text || 'Untitled'}`);
+                
+                // Check if the playlist has an endpoint that might be a topic channel
+                if (playlist.endpoint?.browse_endpoint?.browse_id) {
+                    const browseId = playlist.endpoint.browse_endpoint.browse_id;
+                    
+                    // If this looks like a topic channel ID, return it
+                    if (browseId.startsWith('UC') || browseId.includes('music_channel')) {
+                        return {
+                            title: `${channel.metadata?.title || ''} - Topic`,
+                            subtitle: 'Music Artist',
+                            endpoint: browseId,
+                            source: 'releases_playlist'
+                        };
+                    }
+                }
+                
+                // Check if the playlist has a channel_id property
+                if (playlist.channel_id || playlist.author?.id || playlist.author?.channel_id) {
+                    const channelId = playlist.channel_id || playlist.author?.id || playlist.author?.channel_id;
+                    
+                    // If this looks like a topic channel ID, return it
+                    if (channelId.startsWith('UC') || channelId.includes('music_channel')) {
+                        return {
+                            title: `${channel.metadata?.title || ''} - Topic`,
+                            subtitle: 'Music Artist',
+                            endpoint: channelId,
+                            source: 'releases_playlist_channel'
+                        };
+                    }
+                }
+                
+                // If the playlist has a thumbnail, try to fetch the first video
+                if (playlist.first_video_id) {
+                    try {
+                        console.log(`Fetching video info for ${playlist.first_video_id}`);
+                        const videoInfo = await yt.getInfo(playlist.first_video_id);
+                        
+                        // Check if the video has a music topic channel
+                        if (videoInfo.basic_info?.channel_id && 
+                            videoInfo.basic_info?.channel_id !== channel.metadata.external_id) {
+                            
+                            const videoChannelId = videoInfo.basic_info.channel_id;
+                            if (videoChannelId.startsWith('UC') || videoChannelId.includes('music_channel')) {
+                                return {
+                                    title: videoInfo.basic_info?.author || `${channel.metadata?.title || ''} - Topic`,
+                                    subtitle: 'Music Artist',
+                                    endpoint: videoChannelId,
+                                    source: 'video_in_playlist'
+                                };
+                            }
+                        }
+                    } catch (error) {
+                        console.log(`Error fetching video info: ${error.message}`);
+                    }
+                }
             }
         }
         
-        update_fetch_progress($conn, $channel_id, $page, 'completed', $fetchedCount, $type);
-        return $fetchedCount;
-        
-    } catch (Exception $e) {
-        update_fetch_progress($conn, $channel_id, $page, 'failed', $fetchedCount, $type, $e->getMessage());
-        throw $e;
-    }
-}
-
-// Add this SQL to create a topic_channels table
-$sql = "CREATE TABLE IF NOT EXISTS topic_channels (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    channel_id VARCHAR(30) NOT NULL,
-    topic_id VARCHAR(30) NOT NULL,
-    title VARCHAR(255) NOT NULL,
-    subtitle VARCHAR(255),
-    avatar_url VARCHAR(255),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY unique_channel_topic (channel_id, topic_id)
-)";
-
-try {
-    $conn->query($sql);
-    log_message("Ensured topic_channels table structure");
-} catch (Exception $e) {
-    log_message("Error creating topic_channels table: " . $e->getMessage(), 'ERROR');
-}
-
-// Add a function to fetch topic channel data
-function fetch_topic_channel($topic_id) {
-    try {
-        log_message("Fetching topic channel: $topic_id");
-        $response = make_api_request("/topic/$topic_id");
-        
-        if (isset($response['id'])) {
-            log_message("Successfully fetched topic channel: " . $response['title']);
-            return $response;
-        } else {
-            log_message("Warning: Topic channel info not found in response", 'WARN');
-            return null;
-        }
-    } catch (Exception $e) {
-        log_message("Error fetching topic channel: " . $e->getMessage(), 'ERROR');
+        return null;
+    } catch (error) {
+        console.log(`Error in extractTopicChannelFromPlaylists: ${error.message}`);
         return null;
     }
 }
 
-// Add this SQL to create playlists table
-$sql = "CREATE TABLE IF NOT EXISTS playlists (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    playlist_id VARCHAR(30) NOT NULL,
-    title VARCHAR(255) NOT NULL,
-    thumbnail_url VARCHAR(255),
-    channel_id VARCHAR(30) NOT NULL,
-    type VARCHAR(50) DEFAULT 'Album',
-    release_date DATETIME NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY unique_playlist (playlist_id)
-)";
-
-try {
-    $conn->query($sql);
-    log_message("Ensured playlists table structure");
-} catch (Exception $e) {
-    log_message("Error creating playlists table: " . $e->getMessage(), 'ERROR');
-}
-
-// Add this SQL to create video_playlists table
-$sql = "CREATE TABLE IF NOT EXISTS video_playlists (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    video_id VARCHAR(30) NOT NULL,
-    playlist_id VARCHAR(30) NOT NULL,
-    position INT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY unique_video_playlist (video_id, playlist_id)
-)";
-
-try {
-    $conn->query($sql);
-    log_message("Ensured video_playlists table structure");
-} catch (Exception $e) {
-    log_message("Error creating video_playlists table: " . $e->getMessage(), 'ERROR');
-}
-
-// Function to save playlist to database
-function save_playlist($conn, $playlist_id, $title, $thumbnail_url, $channel_id, $type = 'Album', $release_date = null) {
+// Update the releases debug endpoint to handle pagination more reliably
+app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
     try {
-        // Prepare the SQL statement
-        $stmt = $conn->prepare("INSERT INTO playlists 
-            (playlist_id, title, thumbnail_url, channel_id, type, release_date) 
-            VALUES (?, ?, ?, ?, ?, ?) 
-            ON DUPLICATE KEY UPDATE 
-            title = VALUES(title), 
-            thumbnail_url = COALESCE(NULLIF(VALUES(thumbnail_url), ''), thumbnail_url),
-            type = VALUES(type),
-            release_date = COALESCE(NULLIF(VALUES(release_date), ''), release_date)");
+        console.log('Exploring Releases tab for channel:', req.params.channelId);
+        const channel = await yt.getChannel(req.params.channelId);
         
-        if (!$stmt) {
-            throw new Exception("Failed to prepare statement: " . $conn->error);
-        }
+        // Get pagination parameters
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 30;
+        const fetchAll = req.query.all === 'true';
         
-        $stmt->bind_param("ssssss", 
-            $playlist_id, 
-            $title, 
-            $thumbnail_url, 
-            $channel_id,
-            $type,
-            $release_date
-        );
+        // Basic channel info
+        const channelInfo = {
+            id: channel.metadata?.external_id || '',
+            title: channel.metadata?.title || ''
+        };
         
-        // Execute and check result
-        $result = $stmt->execute();
-        if (!$result) {
-            throw new Exception("Failed to execute statement: " . $stmt->error);
-        }
-        
-        log_message("Successfully saved/updated playlist: $playlist_id" . ($release_date ? " with release date: $release_date" : ""));
-        $stmt->close();
-        
-    } catch (Exception $e) {
-        log_message("Database error saving playlist $playlist_id: " . $e->getMessage(), 'ERROR');
-        throw $e;
-    }
-}
-
-// Function to save playlist video (without adding to main videos table)
-function save_playlist_video($conn, $video_id, $playlist_id, $position = null) {
-    try {
-        // Prepare the SQL statement - only insert into video_playlists table
-        $stmt = $conn->prepare("INSERT INTO video_playlists 
-            (video_id, playlist_id, position) 
-            VALUES (?, ?, ?) 
-            ON DUPLICATE KEY UPDATE 
-            position = VALUES(position)");
-        
-        if (!$stmt) {
-            throw new Exception("Failed to prepare statement: " . $conn->error);
-        }
-        
-        $stmt->bind_param("ssi", 
-            $video_id, 
-            $playlist_id, 
-            $position
-        );
-        
-        // Execute and check result
-        $result = $stmt->execute();
-        if (!$result) {
-            throw new Exception("Failed to execute statement: " . $stmt->error);
-        }
-        
-        log_message("Successfully saved playlist video: $video_id in playlist $playlist_id at position $position");
-        $stmt->close();
-        
-    } catch (Exception $e) {
-        log_message("Database error saving playlist video $video_id: " . $e->getMessage(), 'ERROR');
-        throw $e;
-    }
-}
-
-// Enhanced approach to extract release date from videos
-function extract_release_date_from_playlist($playlist_id, $videos) {
-    if (empty($videos) || !is_array($videos)) {
-        return null;
-    }
-    
-    $publish_dates = [];
-    
-    // Collect publish dates from up to 3 videos
-    $videos_to_check = array_slice($videos, 0, 3);
-    foreach ($videos_to_check as $video) {
-        if (!empty($video['published_at'])) {
-            $date = parse_release_date($video['published_at']);
-            if ($date) {
-                $publish_dates[] = $date;
-                log_message("Found publish date for video {$video['video_id']}: $date");
+        // Try to access the Releases tab
+        let releasesInfo = null;
+        try {
+            // Always start with page 1
+            let releasesTab = await channel.getTabByName('Releases');
+            if (releasesTab) {
+                console.log('Found Releases tab');
+                
+                // Collect all playlists
+                const allPlaylists = [];
+                
+                // Add first page playlists
+                if (releasesTab.playlists && releasesTab.playlists.length) {
+                    allPlaylists.push(...releasesTab.playlists);
+                    console.log(`Added ${releasesTab.playlists.length} playlists from first page`);
+                }
+                
+                // If we need more pages (either for fetchAll or to reach the requested page)
+                let currentPage = 1;
+                let continuationTab = releasesTab;
+                
+                while (continuationTab.has_continuation && 
+                      (fetchAll || currentPage < page)) {
+                    try {
+                        currentPage++;
+                        console.log(`Fetching continuation for page ${currentPage}...`);
+                        
+                        continuationTab = await continuationTab.getContinuation();
+                        
+                        if (continuationTab.playlists && continuationTab.playlists.length) {
+                            allPlaylists.push(...continuationTab.playlists);
+                            console.log(`Added ${continuationTab.playlists.length} more playlists, total: ${allPlaylists.length}`);
+                        } else {
+                            console.log('No more playlists found in continuation');
+                            break;
+                        }
+                    } catch (error) {
+                        console.error(`Error fetching continuation for page ${currentPage}: ${error.message}`);
+                        break;
+                    }
+                }
+                
+                // Extract basic tab info
+                releasesInfo = {
+                    found: true,
+                    has_content: !!releasesTab.page_contents,
+                    content_type: releasesTab.page_contents?.type || null,
+                    has_shelves: Array.isArray(releasesTab.shelves) && releasesTab.shelves.length > 0,
+                    shelves_count: Array.isArray(releasesTab.shelves) ? releasesTab.shelves.length : 0,
+                    has_playlists: allPlaylists.length > 0,
+                    playlists_count: allPlaylists.length,
+                    has_continuation: continuationTab.has_continuation,
+                    total_pages_fetched: currentPage
+                };
+                
+                // Calculate which playlists to include in the response
+                let playlistsToProcess = [];
+                
+                if (fetchAll) {
+                    // Include all playlists
+                    playlistsToProcess = allPlaylists;
+                } else {
+                    // Calculate the start and end indices for the requested page
+                    const startIndex = (page - 1) * limit;
+                    const endIndex = startIndex + limit;
+                    
+                    // Check if we have enough playlists
+                    if (startIndex >= allPlaylists.length) {
+                        // Requested page is beyond available data
+                        playlistsToProcess = [];
+                    } else {
+                        // Get the playlists for the requested page
+                        playlistsToProcess = allPlaylists.slice(startIndex, endIndex);
+                    }
+                }
+                
+                // Update the count to reflect the total number of playlists found
+                releasesInfo.total_playlists_found = allPlaylists.length;
+                releasesInfo.playlists_in_response = playlistsToProcess.length;
+                
+                // Process the selected playlists
+                releasesInfo.playlists = [];
+                
+                for (const playlist of playlistsToProcess) {
+                    const playlistInfo = {
+                        title: playlist.title?.text || 'Untitled',
+                        type: playlist.type || '',
+                        playlist_id: playlist.id || playlist.playlist_id || '',
+                        video_count: playlist.video_count || 0,
+                        thumbnail_url: playlist.thumbnail?.[0]?.url || '',
+                        has_endpoint: !!playlist.endpoint,
+                        endpoint: playlist.endpoint?.browse_endpoint?.browse_id || '',
+                        channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || '',
+                        channel_name: playlist.author?.name || '',
+                        first_video_id: playlist.first_video_id || ''
+                    };
+                    
+                    // If this playlist has a first video, try to get more info about it
+                    if (playlist.first_video_id && (fetchAll || page === 1)) {
+                        // Only fetch video info for the first page or when fetching all
+                        // to avoid too many API calls
+                        try {
+                            const videoInfo = await yt.getInfo(playlist.first_video_id);
+                            playlistInfo.video_info = {
+                                title: videoInfo.basic_info?.title || '',
+                                channel_id: videoInfo.basic_info?.channel_id || '',
+                                channel_name: videoInfo.basic_info?.author || '',
+                                is_different_channel: videoInfo.basic_info?.channel_id !== channel.metadata.external_id
+                            };
+                            
+                            // If this video has a different channel ID, it might be the topic channel
+                            if (playlistInfo.video_info.is_different_channel) {
+                                console.log(`Found potential topic channel: ${playlistInfo.video_info.channel_id}`);
+                            }
+                        } catch (error) {
+                            playlistInfo.video_info_error = error.message;
+                        }
+                    }
+                    
+                    releasesInfo.playlists.push(playlistInfo);
+                }
+                
+                // Extract detailed shelf info
+                if (releasesTab.shelves && releasesTab.shelves.length) {
+                    releasesInfo.shelves = [];
+                    
+                    for (const shelf of releasesTab.shelves) {
+                        const shelfInfo = {
+                            title: shelf.title?.text || '',
+                            type: shelf.type || '',
+                            items_count: shelf.items?.length || 0,
+                            has_endpoint: !!shelf.endpoint,
+                            endpoint: shelf.endpoint?.browse_endpoint?.browse_id || ''
+                        };
+                        
+                        // Extract items from the shelf
+                        if (shelf.items && shelf.items.length) {
+                            shelfInfo.items = shelf.items.map(item => ({
+                                title: item.title?.text || '',
+                                type: item.type || '',
+                                has_endpoint: !!item.endpoint,
+                                endpoint: item.endpoint?.browse_endpoint?.browse_id || '',
+                                channel_id: item.channel_id || item.author?.id || item.author?.channel_id || '',
+                                channel_name: item.author?.name || ''
+                            }));
+                        }
+                        
+                        releasesInfo.shelves.push(shelfInfo);
+                    }
+                }
             }
+        } catch (error) {
+            console.log(`Error accessing Releases tab: ${error.message}`);
+            releasesInfo = {
+                found: false,
+                error: error.message
+            };
         }
-    }
-    
-    if (!empty($publish_dates)) {
-        // Sort dates to find the earliest one
-        sort($publish_dates);
-        $release_date = $publish_dates[0];
-        log_message("Using earliest video publish date as release date for playlist $playlist_id: $release_date");
-        return $release_date;
-    }
-    
-    return null;
-}
-
-// Function to fetch channel releases (playlists)
-function fetch_channel_releases($channel_id, $resume = true) {
-    global $conn;
-    $fetchedCount = 0;
-    $page = 1;
-    
-    try {
-        // Get existing progress if resuming
-        if ($resume) {
-            $progress = get_fetch_progress($conn, $channel_id, 'releases');
-            if ($progress['status'] === 'completed') {
-                return $progress['items_fetched'];
+        
+        // Construct the response
+        const response = {
+            channel: channelInfo,
+            releases: releasesInfo,
+            pagination: {
+                current_page: page,
+                items_per_page: limit,
+                fetch_all: fetchAll,
+                total_items: releasesInfo?.total_playlists_found || 0,
+                total_pages: Math.ceil((releasesInfo?.total_playlists_found || 0) / limit)
             }
-            $page = $progress['status'] === 'failed' ? 1 : $progress['page'];
-            $fetchedCount = $progress['items_fetched'];
-        }
+        };
         
-        update_fetch_progress($conn, $channel_id, $page, 'in_progress', $fetchedCount, 'releases');
+        res.json(response);
+    } catch (error) {
+        console.error('Releases tab exploration error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update the function that extracts release dates to prioritize video publish dates
+app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
+    try {
+        console.log('Fetching releases with videos for channel:', req.params.channelId);
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 30;
         
-        $hasMore = true;
-        while ($hasMore) {
-            $response = make_api_request("/channel/$channel_id/releases/videos", [
-                'page' => $page
-            ]);
+        const channel = await yt.getChannel(req.params.channelId);
+        
+        // Basic channel info
+        const channelInfo = {
+            id: channel.metadata?.external_id || '',
+            title: channel.metadata?.title || ''
+        };
+        
+        // Try to access the Releases tab
+        let releasesWithVideos = [];
+        let hasMore = false;
+        
+        try {
+            // Get all playlists from releases tab
+            let releasesTab = await channel.getTabByName('Releases');
+            if (!releasesTab) {
+                return res.json({
+                    channel: channelInfo,
+                    releases: [],
+                    pagination: {
+                        has_more: false,
+                        current_page: page,
+                        items_per_page: limit,
+                        total_items: 0
+                    }
+                });
+            }
             
-            if (isset($response['releases']) && is_array($response['releases'])) {
-                foreach ($response['releases'] as $release) {
-                    // Skip if missing required fields
-                    if (empty($release['playlist_id']) || empty($release['title'])) {
-                        log_message("Skipping release with missing required fields", 'WARN');
+            console.log('Found Releases tab');
+            
+            // Collect all playlists for the current page
+            const allPlaylists = [];
+            
+            // Add first page playlists
+            if (releasesTab.playlists && releasesTab.playlists.length) {
+                allPlaylists.push(...releasesTab.playlists);
+                console.log(`Added ${releasesTab.playlists.length} playlists from first page`);
+            }
+            
+            // Fetch continuations until we reach the requested page
+            let currentPage = 1;
+            let continuationTab = releasesTab;
+            
+            while (currentPage < page && continuationTab.has_continuation) {
+                try {
+                    currentPage++;
+                    console.log(`Fetching continuation for page ${currentPage}...`);
+                    
+                    continuationTab = await continuationTab.getContinuation();
+                    
+                    if (continuationTab.playlists && continuationTab.playlists.length) {
+                        if (currentPage === page) {
+                            // This is the page we want
+                            allPlaylists.length = 0; // Clear previous pages
+                            allPlaylists.push(...continuationTab.playlists);
+                            console.log(`Added ${continuationTab.playlists.length} playlists from page ${currentPage}`);
+                        }
+                    } else {
+                        console.log('No more playlists found in continuation');
+                        break;
+                    }
+                } catch (error) {
+                    console.error(`Error fetching continuation for page ${currentPage}: ${error.message}`);
+                    break;
+                }
+            }
+            
+            // Check if there are more pages
+            hasMore = continuationTab.has_continuation;
+            
+            // Take only the requested number of playlists
+            const playlistsForPage = allPlaylists.slice(0, limit);
+            console.log(`Processing ${playlistsForPage.length} playlists for page ${page}`);
+            
+            // Process each playlist to get its videos
+            for (const playlist of playlistsForPage) {
+                try {
+                    const playlistId = playlist.id || playlist.playlist_id || '';
+                    if (!playlistId) {
+                        console.log('Skipping playlist with no ID');
                         continue;
                     }
                     
-                    // First try to extract release date from videos (most reliable)
-                    $release_date = null;
-                    if (!empty($release['videos']) && is_array($release['videos'])) {
-                        $release_date = extract_release_date_from_playlist($release['playlist_id'], $release['videos']);
-                    }
+                    console.log(`Fetching videos for playlist: ${playlistId} (${playlist.title?.text || 'Untitled'})`);
                     
-                    // If no date from videos, try other methods
-                    if (!$release_date) {
-                        // Try to extract from raw metadata
-                        if (!empty($release['raw_metadata'])) {
-                            log_message("Examining raw metadata for release date: " . json_encode($release['raw_metadata']));
+                    // Get playlist details
+                    const playlistDetails = await yt.getPlaylist(playlistId);
+                    
+                    // Log the entire playlist details structure: ${JSON.stringify(Object.keys(playlistDetails))}`);
+                    
+                    // First try to get video publish dates as the most reliable source
+                    let releaseDate = null;
+                    
+                    if (playlistDetails.videos && playlistDetails.videos.length > 0) {
+                        try {
+                            // Get the first few videos to analyze their publish dates
+                            const videosToCheck = playlistDetails.videos.slice(0, 3); // Check first 3 videos
+                            const publishDates = [];
                             
-                            // Try different paths where release date might be found
-                            if (!empty($release['raw_metadata']['publish_date'])) {
-                                $release_date = parse_release_date($release['raw_metadata']['publish_date']);
-                            } elseif (!empty($release['raw_metadata']['date'])) {
-                                $release_date = parse_release_date($release['raw_metadata']['date']);
-                            } elseif (!empty($release['raw_metadata']['year'])) {
-                                // If only year is available, use January 1st of that year
-                                $release_date = $release['raw_metadata']['year'] . '-01-01';
-                            } elseif (!empty($release['raw_metadata']['description_snippet']['text'])) {
-                                $desc = $release['raw_metadata']['description_snippet']['text'];
-                                
-                                // Try various date patterns
-                                if (preg_match('/Released on:?\s*(\d{4}-\d{2}-\d{2})/i', $desc, $matches)) {
-                                    $release_date = $matches[1];
-                                } elseif (preg_match('/Release date:?\s*(\d{4}-\d{2}-\d{2})/i', $desc, $matches)) {
-                                    $release_date = $matches[1];
-                                } elseif (preg_match('/Released:?\s*(\d{4}-\d{2}-\d{2})/i', $desc, $matches)) {
-                                    $release_date = $matches[1];
-                                } elseif (preg_match('/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/', $desc, $matches)) {
-                                    // Assume MM/DD/YYYY format
-                                    $release_date = sprintf('%04d-%02d-%02d', $matches[3], $matches[1], $matches[2]);
-                                } elseif (preg_match('/(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/', $desc, $matches)) {
-                                    // YYYY/MM/DD format
-                                    $release_date = sprintf('%04d-%02d-%02d', $matches[1], $matches[2], $matches[3]);
+                            for (const video of videosToCheck) {
+                                try {
+                                    const videoInfo = await yt.getInfo(video.id);
+                                    
+                                    if (videoInfo.basic_info?.publish_date) {
+                                        // Convert to YYYY-MM-DD format if needed
+                                        let publishDate = videoInfo.basic_info.publish_date;
+                                        if (publishDate.includes('T')) {
+                                            publishDate = publishDate.split('T')[0];
+                                        }
+                                        publishDates.push(publishDate);
+                                        console.log(`Video ${video.id} publish date:`, publishDate);
+                                    }
+                                } catch (videoError) {
+                                    console.error(`Error getting video info for ${video.id}:`, videoError.message);
                                 }
                             }
                             
-                            if ($release_date) {
-                                log_message("Extracted release date from metadata: $release_date");
+                            if (publishDates.length > 0) {
+                                // Sort dates to find the earliest one (likely the album release date)
+                                publishDates.sort();
+                                releaseDate = publishDates[0];
+                                console.log('Using earliest video publish date as release date:', releaseDate);
                             }
+                        } catch (error) {
+                            console.error('Error analyzing video publish dates:', error.message);
                         }
                     }
                     
-                    // If still no release date, try to extract year from title
-                    if (!$release_date) {
-                        if (preg_match('/\b(19\d{2}|20\d{2})\b/', $release['title'], $matches)) {
-                            $release_date = $matches[1] . '-01-01';
-                            log_message("Extracted year from title: $release_date");
-                        }
+                    // Only if we couldn't get video publish dates, try other methods
+                    if (!releaseDate) {
+                        // ... existing fallback methods ...
                     }
                     
-                    // If still no release date, use the first video's date if available
-                    if (!$release_date && !empty($release['videos']) && !empty($release['videos'][0]['published_at'])) {
-                        $release_date = parse_release_date($release['videos'][0]['published_at']);
-                        log_message("Using first video's publish date: $release_date");
-                    }
-                    
-                    // Save the playlist with release date
-                    save_playlist(
-                        $conn,
-                        $release['playlist_id'],
-                        $release['title'],
-                        $release['thumbnail_url'] ?? '',
-                        $channel_id,
-                        $release['type'] ?? 'Album',
-                        $release_date
-                    );
+                    const releaseInfo = {
+                        playlist_id: playlistId,
+                        title: playlist.title?.text || 'Untitled',
+                        type: playlist.type || 'Album',
+                        thumbnail_url: playlist.thumbnail?.[0]?.url || '',
+                        channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || channelInfo.id,
+                        channel_name: playlist.author?.name || channelInfo.title,
+                        videos_count: playlistDetails.videos?.length || 0,
+                        release_date: releaseDate,
+                        raw_metadata: playlistDetails.metadata || {},  // Include raw metadata for debugging
+                        videos: []
+                    };
                     
                     // Process videos in the playlist
-                    if (isset($release['videos']) && is_array($release['videos'])) {
-                        $position = 0;
-                        foreach ($release['videos'] as $video) {
-                            // Skip if missing video_id
-                            if (empty($video['video_id'])) {
-                                log_message("Skipping video with missing video_id", 'WARN');
-                                continue;
-                            }
-                            
+                    if (playlistDetails.videos && playlistDetails.videos.length) {
+                        for (const video of playlistDetails.videos) {
                             try {
-                                // Only save to video_playlists table, not to videos table
-                                save_playlist_video(
-                                    $conn,
-                                    $video['video_id'],
-                                    $release['playlist_id'],
-                                    $position++
-                                );
+                                const videoData = {
+                                    video_id: video.id,
+                                    title: video.title?.text || '',
+                                    thumbnail_url: video.thumbnail?.[0]?.url || getCleanThumbnailUrl(video.id),
+                                    duration: video.duration?.text || '',
+                                    channel_id: video.author?.id || releaseInfo.channel_id,
+                                    channel_name: video.author?.name || releaseInfo.channel_name,
+                                    playlist_id: playlistId,
+                                    album_title: releaseInfo.title,
+                                    album_type: releaseInfo.type
+                                };
                                 
-                                // If we have the playlist_videos table, save video details there
-                                if ($conn->query("SHOW TABLES LIKE 'playlist_videos'")->num_rows > 0) {
-                                    $stmt = $conn->prepare("INSERT INTO playlist_videos 
-                                        (video_id, title, thumbnail_url, duration, playlist_id, position) 
-                                        VALUES (?, ?, ?, ?, ?, ?) 
-                                        ON DUPLICATE KEY UPDATE 
-                                        title = VALUES(title),
-                                        thumbnail_url = VALUES(thumbnail_url),
-                                        duration = VALUES(duration),
-                                        position = VALUES(position)");
-                                    
-                                    if ($stmt) {
-                                        $stmt->bind_param("sssssi", 
-                                            $video['video_id'], 
-                                            $video['title'] ?? 'Untitled', 
-                                            $video['thumbnail_url'] ?? '', 
-                                            $video['duration'] ?? '', 
-                                            $release['playlist_id'], 
-                                            $position - 1
-                                        );
-                                        
-                                        $stmt->execute();
-                                        $stmt->close();
-                                        
-                                        log_message("Saved video details to playlist_videos: {$video['video_id']}");
-                                    }
-                                }
-                            } catch (Exception $e) {
-                                log_message("Error saving video {$video['video_id']} from playlist: " . $e->getMessage(), 'ERROR');
-                                // Continue with next video instead of failing the entire process
-                                continue;
+                                releaseInfo.videos.push(videoData);
+                            } catch (error) {
+                                console.error(`Error processing video in playlist: ${error.message}`);
                             }
                         }
                     }
                     
-                    $fetchedCount++;
+                    releasesWithVideos.push(releaseInfo);
+                } catch (error) {
+                    console.error(`Error processing playlist: ${error.message}`);
                 }
             }
             
-            update_fetch_progress($conn, $channel_id, $page, 'in_progress', $fetchedCount, 'releases');
-            
-            $hasMore = $response['pagination']['has_more'] ?? false;
-            if ($hasMore) {
-                $page++;
-                usleep(500000); // 0.5 second delay between batches
+        } catch (error) {
+            console.error(`Error accessing Releases tab: ${error.message}`);
+        }
+        
+        // Construct the response
+        const response = {
+            channel: channelInfo,
+            releases: releasesWithVideos,
+            pagination: {
+                has_more: hasMore,
+                current_page: page,
+                items_per_page: limit,
+                total_items: releasesWithVideos.length
             }
-        }
+        };
         
-        update_fetch_progress($conn, $channel_id, $page, 'completed', $fetchedCount, 'releases');
-        return $fetchedCount;
-        
-    } catch (Exception $e) {
-        update_fetch_progress($conn, $channel_id, $page, 'failed', $fetchedCount, 'releases', $e->getMessage());
-        throw $e;
+        res.json(response);
+    } catch (error) {
+        console.error('Error fetching releases with videos:', error);
+        res.status(500).json({ error: error.message });
     }
-}
+});
 
-// Helper function to parse various date formats into MySQL format
-function parse_release_date($date_string) {
-    if (empty($date_string)) {
-        return null;
-    }
-    
-    // If it's already in YYYY-MM-DD format, return it
-    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_string)) {
-        return $date_string;
-    }
-    
-    // Try to parse with DateTime
-    try {
-        $date = new DateTime($date_string);
-        return $date->format('Y-m-d');
-    } catch (Exception $e) {
-        // If DateTime parsing fails, try manual parsing
-    }
-    
-    // Try various date formats
-    // MM/DD/YYYY or DD/MM/YYYY
-    if (preg_match('/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/', $date_string, $matches)) {
-        // Assume MM/DD/YYYY format for simplicity
-        return sprintf('%04d-%02d-%02d', $matches[3], $matches[1], $matches[2]);
-    }
-    
-    // YYYY/MM/DD
-    if (preg_match('/(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/', $date_string, $matches)) {
-        return sprintf('%04d-%02d-%02d', $matches[1], $matches[2], $matches[3]);
-    }
-    
-    // Just a year
-    if (preg_match('/^(19\d{2}|20\d{2})$/', $date_string)) {
-        return $date_string . '-01-01';
-    }
-    
-    // Month Year (e.g., "January 2020")
-    if (preg_match('/([a-zA-Z]+)\s+(\d{4})/', $date_string, $matches)) {
-        $month_names = [
-            'january' => 1, 'february' => 2, 'march' => 3, 'april' => 4,
-            'may' => 5, 'june' => 6, 'july' => 7, 'august' => 8,
-            'september' => 9, 'october' => 10, 'november' => 11, 'december' => 12
-        ];
-        
-        $month = strtolower($matches[1]);
-        if (isset($month_names[$month])) {
-            return sprintf('%04d-%02d-01', $matches[2], $month_names[$month]);
-        }
-    }
-    
-    // If all parsing attempts fail, return null
-    return null;
-}
-
-// Update the fetch_all_channel_content function to include releases
-function fetch_all_channel_content($channel_id, $resume = true) {
-    global $conn;
-    $total_fetched = 0;
-    
-    try {
-        log_message("Starting to fetch all content for channel $channel_id");
-        
-        // First fetch and save channel info
-        log_message("Fetching channel info...");
-        $channel_response = make_api_request("/channel/$channel_id");
-        
-        if (isset($channel_response['id'])) {
-            // Check if there's topic channel info
-            $topic_details = $channel_response['topic_details'] ?? null;
-            
-            // Save the channel with topic details if available
-            save_channel(
-                $conn,
-                $channel_response['id'],
-                $channel_response['title'],
-                $channel_response['thumbnail_url'],
-                $channel_response['banner_url'],
-                $topic_details
-            );
-            
-            log_message("Saved channel info for: " . $channel_response['title']);
-            
-            // If we have topic details with an endpoint, fetch that too
-            if ($topic_details && isset($topic_details['endpoint'])) {
-                $topic_id = $topic_details['endpoint'];
-                $topic_channel = fetch_topic_channel($topic_id);
-                
-                if ($topic_channel) {
-                    log_message("Successfully fetched related topic channel: " . $topic_channel['title']);
-                }
-            }
-        } else {
-            log_message("Warning: Channel info not found in response", 'WARN');
-        }
-        
-        // Then fetch regular videos
-        log_message("Fetching regular videos...");
-        $videos_count = fetch_channel_videos($channel_id, $resume, 'videos');
-        $total_fetched += $videos_count;
-        log_message("Completed fetching regular videos. Count: $videos_count");
-        
-        // Then fetch shorts
-        log_message("Fetching shorts...");
-        $shorts_count = fetch_channel_videos($channel_id, $resume, 'shorts');
-        $total_fetched += $shorts_count;
-        log_message("Completed fetching shorts. Count: $shorts_count");
-        
-        // Then fetch releases (playlists)
-        log_message("Fetching releases (playlists)...");
-        $releases_count = fetch_channel_releases($channel_id, $resume);
-        $total_fetched += $releases_count;
-        log_message("Completed fetching releases. Count: $releases_count");
-        
-        return [
-            'total' => $total_fetched,
-            'videos' => $videos_count,
-            'shorts' => $shorts_count,
-            'releases' => $releases_count,
-            'channel' => [
-                'id' => $channel_response['id'] ?? null,
-                'title' => $channel_response['title'] ?? null,
-                'thumbnail' => $channel_response['thumbnail_url'] ?? null,
-                'banner' => $channel_response['banner_url'] ?? null,
-                'has_topic' => isset($channel_response['topic_details'])
-            ]
-        ];
-    } catch (Exception $e) {
-        log_message("Error in fetch_all_channel_content: " . $e->getMessage(), 'ERROR');
-        throw $e;
-    }
-}
-
-// Modify the POST handler to include releases in the response
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    try {
-        $channelUrl = $_POST['channelUrl'] ?? '';
-        $resume = isset($_POST['resume']) ? filter_var($_POST['resume'], FILTER_VALIDATE_BOOLEAN) : true;
-        
-        if (empty($channelUrl)) {
-            throw new Exception('Channel URL is required');
-        }
-
-        if (!preg_match('/(channel|user|c)\/([^\/]+)/', $channelUrl, $matches)) {
-            throw new Exception('Invalid YouTube channel URL format');
-        }
-
-        $channelId = $matches[2];
-        $results = fetch_all_channel_content($channelId, $resume);
-        
-        // Get progress for all types
-        $videos_progress = get_fetch_progress($conn, $channelId, 'videos');
-        $shorts_progress = get_fetch_progress($conn, $channelId, 'shorts');
-        $releases_progress = get_fetch_progress($conn, $channelId, 'releases');
-        
-        echo json_encode([
-            'success' => "Channel content fetched successfully!",
-            'total_fetched' => $results['total'],
-            'regular_videos' => $results['videos'],
-            'shorts' => $results['shorts'],
-            'releases' => $results['releases'],
-            'videos_status' => $videos_progress['status'],
-            'shorts_status' => $shorts_progress['status'],
-            'releases_status' => $releases_progress['status']
-        ]);
-
-    } catch (Exception $e) {
-        error_log("Error in fetch_videos.php: " . $e->getMessage());
-        http_response_code(400);
-        echo json_encode(['error' => $e->getMessage()]);
-    }
-}
-
-// Add this near the top of the file with other table creation code
-$sql = "ALTER TABLE videos ADD COLUMN IF NOT EXISTS is_short TINYINT(1) NOT NULL DEFAULT 0";
-
-try {
-    $conn->query($sql);
-    log_message("Added is_short column to videos table");
-} catch (Exception $e) {
-    log_message("Error adding is_short column: " . $e->getMessage(), 'ERROR');
-}
-
-$conn->close();
-?>
+// Initialize YouTube client before starting the server
+initializeYouTube().then(() => {
+    app.listen(port, () => {
+        console.log(`Server running on port ${port}`);
+    });
+}).catch(error => {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+}); 
