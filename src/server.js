@@ -120,7 +120,7 @@ app.get('/api/video/:videoId', async (req, res) => {
   }
 });
 
-// Helper function to parse YouTube relative time - FIXED to preserve the original date
+// Helper function to parse YouTube relative time
 function parseYouTubeDate(dateStr) {
     try {
         if (!dateStr) return null;
@@ -173,7 +173,7 @@ function parseYouTubeDate(dateStr) {
             return date.toISOString();
         }
 
-        // Try parsing as a regular date (like "Oct 15, 2020")
+        // Try parsing as a regular date
         const parsedDate = new Date(dateStr);
         if (!isNaN(parsedDate.getTime())) {
             return parsedDate.toISOString();
@@ -283,7 +283,7 @@ function getCleanThumbnailUrl(videoId) {
     return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 }
 
-// Enhanced video endpoint to extract dates from all possible locations
+// Modify the channel videos endpoint to include topic info
 app.get('/api/channel/:channelId/videos', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -312,150 +312,54 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
             currentPage++;
         }
 
-        // Process current page videos
+        // Process current page videos in parallel
         if (currentBatch?.videos) {
             const videos = currentBatch.videos.slice(0, limit);
             const processedVideos = [];
             let videoCount = 0;
-
-            // For debugging: Get the first video's full info to examine structure
-            if (videos.length > 0) {
-                try {
-                    const sampleVideoInfo = await yt.getInfo(videos[0].id);
-                    console.log('SAMPLE VIDEO INFO STRUCTURE:');
-                    console.log('Available top-level keys:', Object.keys(sampleVideoInfo));
-                    
-                    // Log primary_info structure if it exists
-                    if (sampleVideoInfo.primary_info) {
-                        console.log('PRIMARY INFO KEYS:', Object.keys(sampleVideoInfo.primary_info));
-                        
-                        // Check for date fields in primary_info
-                        if (sampleVideoInfo.primary_info.date_text) {
-                            console.log('DATE TEXT:', sampleVideoInfo.primary_info.date_text);
-                        }
-                        if (sampleVideoInfo.primary_info.published) {
-                            console.log('PUBLISHED:', sampleVideoInfo.primary_info.published);
-                        }
-                    }
-                    
-                    // Log microformat structure if it exists
-                    if (sampleVideoInfo.microformat?.playerMicroformatRenderer) {
-                        console.log('MICROFORMAT DATE FIELDS:');
-                        console.log('publishDate:', sampleVideoInfo.microformat.playerMicroformatRenderer.publishDate);
-                        console.log('uploadDate:', sampleVideoInfo.microformat.playerMicroformatRenderer.uploadDate);
-                    }
-                } catch (error) {
-                    console.error('Error examining sample video:', error);
-                }
-            }
 
             for (const video of videos) {
                 try {
                     videoCount++;
                     console.log(`Processing video ${videoCount}/${videos.length}: ${video.id}`);
 
-                    // Get detailed video info
-                    const videoInfo = await yt.getInfo(video.id);
-                    
-                    // Extract basic info
+                    // Extract basic info without additional API calls when possible
                     const videoData = {
                         video_id: video.id || video.videoId,
-                        title: videoInfo.basic_info?.title || video.title?.text || '',
-                        description: videoInfo.basic_info?.description || video.description_snippet?.text || '',
-                        thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
-                                     video.thumbnail?.[0]?.url || 
+                        title: video.title?.text || '',
+                        description: video.description_snippet?.text || '',
+                        thumbnail_url: video.thumbnail?.[0]?.url || 
                                      `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
-                        published_at: null, // Will be set below
-                        views: videoInfo.basic_info?.view_count || 
-                               video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
-                        channel_id: videoInfo.basic_info?.channel?.id || 
-                                   channel.metadata?.external_id || '',
-                        channel_title: videoInfo.basic_info?.channel?.name || 
-                                      channel.metadata?.title || '',
-                        duration: videoInfo.basic_info?.duration || 
-                                video.duration?.text || '',
+                        published_at: video.published?.text ? 
+                                     parseYouTubeDate(video.published.text) : null,
+                        views: video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        duration: video.duration?.text || '',
                         is_short: type === 'shorts'
                     };
 
-                    // Try all possible date fields in order of reliability
-                    
-                    // 1. Check microformat which often has exact dates
-                    if (videoInfo.microformat?.playerMicroformatRenderer?.publishDate) {
-                        videoData.published_at = videoInfo.microformat.playerMicroformatRenderer.publishDate;
-                        console.log(`Using microformat publishDate for ${video.id}: ${videoData.published_at}`);
-                    }
-                    else if (videoInfo.microformat?.playerMicroformatRenderer?.uploadDate) {
-                        videoData.published_at = videoInfo.microformat.playerMicroformatRenderer.uploadDate;
-                        console.log(`Using microformat uploadDate for ${video.id}: ${videoData.published_at}`);
-                    }
-                    // 2. Check basic_info
-                    else if (videoInfo.basic_info?.publish_date) {
-                        videoData.published_at = videoInfo.basic_info.publish_date;
-                        console.log(`Using basic_info publish_date for ${video.id}: ${videoData.published_at}`);
-                    }
-                    // 3. Check primary_info
-                    else if (videoInfo.primary_info?.published?.text) {
-                        const publishedText = videoInfo.primary_info.published.text;
-                        console.log(`Found primary_info published text for ${video.id}: ${publishedText}`);
+                    // Only fetch additional info if basic data is missing
+                    if (!videoData.title || !videoData.published_at) {
+                        const additionalInfo = type === 'shorts' ?
+                            await yt.getShortsVideoInfo(video.id) :
+                            await yt.getInfo(video.id);
                         
-                        // Try to parse as exact date
-                        try {
-                            const date = new Date(publishedText);
-                            if (!isNaN(date.getTime())) {
-                                videoData.published_at = date.toISOString();
-                                console.log(`Parsed primary_info date for ${video.id}: ${videoData.published_at}`);
-                            }
-                        } catch (e) {
-                            console.log(`Could not parse primary_info date as exact date: ${e.message}`);
-                        }
-                    }
-                    // 4. Check date_text in primary_info
-                    else if (videoInfo.primary_info?.date_text?.simpleText) {
-                        const dateText = videoInfo.primary_info.date_text.simpleText;
-                        console.log(`Found primary_info date_text for ${video.id}: ${dateText}`);
-                        
-                        // Try to parse as exact date
-                        try {
-                            const date = new Date(dateText);
-                            if (!isNaN(date.getTime())) {
-                                videoData.published_at = date.toISOString();
-                                console.log(`Parsed date_text for ${video.id}: ${videoData.published_at}`);
-                            }
-                        } catch (e) {
-                            console.log(`Could not parse date_text as exact date: ${e.message}`);
-                        }
-                    }
-                    // 5. Last resort: try to parse from the video's published text
-                    else if (video.published?.text) {
-                        console.log(`No exact date found, falling back to relative date for ${video.id}`);
-                        const publishedText = video.published.text;
-                        console.log(`Raw published date for ${video.id}: ${publishedText}`);
-                        
-                        // Parse the date properly
-                        const parsedDate = parseYouTubeDate(publishedText);
-                        if (parsedDate) {
-                            videoData.published_at = parsedDate;
-                            console.log(`Parsed published date for ${video.id}: ${parsedDate}`);
-                        }
+                        videoData.title = videoData.title || additionalInfo.basic_info?.title;
+                        videoData.description = videoData.description || additionalInfo.basic_info?.description;
+                        videoData.published_at = videoData.published_at || 
+                            parseYouTubeDate(additionalInfo.basic_info?.publish_date);
                     }
 
                     processedVideos.push(videoData);
                 } catch (error) {
-                    console.error(`Error processing video ${video.id}:`, error);
-                    // Still add the video with basic info even if there was an error
-                    processedVideos.push({
-                        video_id: video.id || video.videoId,
-                        title: video.title?.text || 'Unknown title',
-                        thumbnail_url: `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
-                        channel_id: channel.metadata?.external_id || '',
-                        channel_title: channel.metadata?.title || '',
-                        error: error.message
-                    });
+                    console.error(`Error processing video: ${error.message}`);
+                    continue;
                 }
             }
 
-            // Construct the response
-            const response = {
+            console.log(`Successfully processed ${processedVideos.length} videos`);
+            return res.json({
                 videos: processedVideos,
                 topic_details: topicDetails,
                 pagination: {
@@ -464,22 +368,17 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     items_per_page: limit,
                     total_items: processedVideos.length
                 }
-            };
-            
-            res.json(response);
-        } else {
-            res.json({
-                videos: [],
-                pagination: {
-                    has_more: false,
-                    current_page: page,
-                    items_per_page: limit,
-                    total_items: 0
-                }
             });
         }
+
+        res.json({
+            videos: [],
+            topic_details: topicDetails,
+            pagination: { has_more: false }
+        });
+
     } catch (error) {
-        console.error('Error fetching videos:', error);
+        console.error('Channel videos error:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -520,23 +419,64 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
   }
 });
 
-// Update the shorts endpoint to handle undefined video IDs
+// Update the shorts processing logic in the /api/shorts/:videoId endpoint
+app.get('/api/shorts/:videoId', async (req, res) => {
+    try {
+        console.log(`Fetching shorts info for: ${req.params.videoId}`);
+        
+        // Get both shorts-specific and regular info
+        let shortInfo = await yt.getShortsVideoInfo(req.params.videoId).catch(() => null);
+        let regularInfo = await yt.getInfo(req.params.videoId).catch(() => null);
+        
+        // Combine the info objects
+        const combinedInfo = {
+            ...shortInfo,
+            regularInfo: regularInfo,
+            basic_info: shortInfo?.basic_info || regularInfo?.basic_info || {},
+            primary_info: regularInfo?.primary_info || shortInfo?.primary_info
+        };
+
+        // Extract simplified info
+        const simplifiedInfo = {
+            video_id: req.params.videoId,
+            title: combinedInfo.basic_info?.title || '',
+            description: combinedInfo.basic_info?.description || '',
+            // Always use the clean thumbnail URL format
+            thumbnail_url: getCleanThumbnailUrl(req.params.videoId),
+            views: extractViews(combinedInfo) || '0',
+            published_at: extractPublishedDate(combinedInfo),
+            channel_id: combinedInfo.basic_info?.channel?.id,
+            channel_title: combinedInfo.basic_info?.channel?.name,
+            channel_thumbnail: combinedInfo.basic_info?.channel?.thumbnails?.[0]?.url,
+            duration: combinedInfo.basic_info?.duration?.text || '',
+            is_short: true,
+            playability_status: combinedInfo.playability_status
+        };
+
+        console.log('Final simplified info:', JSON.stringify(simplifiedInfo, null, 2));
+        res.json(simplifiedInfo);
+    } catch (error) {
+        console.error('Shorts error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update the channel shorts endpoint
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 30;
         
         console.log(`Fetching shorts for channel: ${req.params.channelId} (page ${page})`);
+        
+        // Get channel
         const channel = await yt.getChannel(req.params.channelId);
-        
-        // Get shorts tab
-        const shortsTab = await channel.getShorts();
-        
-        if (!shortsTab?.videos || shortsTab.videos.length === 0) {
-            console.log('No shorts found for this channel');
+
+        if (!channel.has_shorts) {
+            console.log('No shorts found for channel');
             return res.json({
                 shorts: [],
-                pagination: {
+                pagination: { 
                     has_more: false,
                     current_page: page,
                     items_per_page: limit,
@@ -544,166 +484,208 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                 }
             });
         }
-        
-        console.log(`Found ${shortsTab.videos.length} shorts`);
-        
-        // Debug the shorts structure
-        console.log('First short structure:', JSON.stringify(shortsTab.videos[0], null, 2));
+
+        // Get shorts tab
+        const shortsTab = await channel.getShorts();
+        console.log(`Found ${shortsTab?.videos?.length} shorts`);
 
         let currentBatch = shortsTab;
-        let currentPage = 1;
+        let allShorts = [];
 
-        // Skip to requested page
-        while (currentPage < page && currentBatch?.has_continuation) {
-            currentBatch = await currentBatch.getContinuation();
-            currentPage++;
-        }
-
-        // Process current page shorts
-        if (currentBatch?.videos) {
-            const shorts = currentBatch.videos.slice(0, limit);
-            const processedShorts = [];
-            let shortCount = 0;
-
-            for (const short of shorts) {
-                try {
-                    shortCount++;
-                    
-                    // Check if the short has a valid ID
-                    if (!short.id) {
-                        console.log(`Short at index ${shortCount-1} has no ID, skipping detailed fetch`);
-                        
-                        // Still add basic info to the response
-                        processedShorts.push({
-                            video_id: short.videoId || `unknown-${shortCount}`,
-                            title: short.title?.text || 'Unknown title',
-                            description: short.description_snippet?.text || '',
-                            thumbnail_url: short.thumbnail?.[0]?.url || 
-                                         `https://i.ytimg.com/vi/unknown-${shortCount}/hqdefault.jpg`,
-                            published_at: null,
-                            views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
-                            channel_id: channel.metadata?.external_id || '',
-                            channel_title: channel.metadata?.title || '',
-                            duration: short.duration?.text || '',
-                            is_short: true
-                        });
-                        continue;
-                    }
-                    
-                    console.log(`Processing short ${shortCount}/${shorts.length}: ${short.id}`);
-
-                    // Get detailed short info
-                    const shortInfo = await yt.getInfo(short.id);
-                    
-                    // Extract basic info
-                    const shortData = {
-                        video_id: short.id,
-                        title: shortInfo.basic_info?.title || short.title?.text || '',
-                        description: shortInfo.basic_info?.description || short.description_snippet?.text || '',
-                        thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
-                                     short.thumbnail?.[0]?.url || 
-                                     `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
-                        published_at: null, // Will be set below
-                        views: shortInfo.basic_info?.view_count || 
-                               short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
-                        channel_id: shortInfo.basic_info?.channel?.id || 
-                                   channel.metadata?.external_id || '',
-                        channel_title: shortInfo.basic_info?.channel?.name || 
-                                      channel.metadata?.title || '',
-                        duration: shortInfo.basic_info?.duration || 
-                                short.duration?.text || '',
-                        is_short: true
-                    };
-
-                    // Try all possible date fields in order of reliability
-                    
-                    // 1. Check primary_info.published which we found works best
-                    if (shortInfo.primary_info?.published?.text) {
-                        const publishedText = shortInfo.primary_info.published.text;
-                        console.log(`Found primary_info published text for ${short.id}: ${publishedText}`);
-                        
-                        // Try to parse as exact date
-                        try {
-                            const date = new Date(publishedText);
-                            if (!isNaN(date.getTime())) {
-                                shortData.published_at = date.toISOString();
-                                console.log(`Parsed primary_info date for ${short.id}: ${shortData.published_at}`);
-                            }
-                        } catch (e) {
-                            console.log(`Could not parse primary_info date as exact date: ${e.message}`);
-                        }
-                    }
-                    // 2. Check microformat which often has exact dates
-                    else if (shortInfo.microformat?.playerMicroformatRenderer?.publishDate) {
-                        shortData.published_at = shortInfo.microformat.playerMicroformatRenderer.publishDate;
-                        console.log(`Using microformat publishDate for ${short.id}: ${shortData.published_at}`);
-                    }
-                    else if (shortInfo.microformat?.playerMicroformatRenderer?.uploadDate) {
-                        shortData.published_at = shortInfo.microformat.playerMicroformatRenderer.uploadDate;
-                        console.log(`Using microformat uploadDate for ${short.id}: ${shortData.published_at}`);
-                    }
-                    // 3. Check basic_info
-                    else if (shortInfo.basic_info?.publish_date) {
-                        shortData.published_at = shortInfo.basic_info.publish_date;
-                        console.log(`Using basic_info publish_date for ${short.id}: ${shortData.published_at}`);
-                    }
-                    // 4. Last resort: try to parse from the short's published text
-                    else if (short.published?.text) {
-                        console.log(`No exact date found, falling back to relative date for ${short.id}`);
-                        const publishedText = short.published.text;
-                        console.log(`Raw published date for ${short.id}: ${publishedText}`);
-                        
-                        // Parse the date properly
-                        const parsedDate = parseYouTubeDate(publishedText);
-                        if (parsedDate) {
-                            shortData.published_at = parsedDate;
-                            console.log(`Parsed published date for ${short.id}: ${parsedDate}`);
-                        }
-                    }
-
-                    processedShorts.push(shortData);
-                } catch (error) {
-                    console.error(`Error processing short ${short.id || 'unknown'}:`, error);
-                    // Still add the short with basic info even if there was an error
-                    processedShorts.push({
-                        video_id: short.id || short.videoId || `unknown-${shortCount}`,
-                        title: short.title?.text || 'Unknown title',
-                        thumbnail_url: short.thumbnail?.[0]?.url || 
-                                     `https://i.ytimg.com/vi/${short.id || 'unknown'}/hqdefault.jpg`,
-                        channel_id: channel.metadata?.external_id || '',
-                        channel_title: channel.metadata?.title || '',
-                        error: error.message,
-                        is_short: true
-                    });
-                }
+        // Collect all shorts up to the requested page
+        for (let currentPage = 1; currentPage <= page; currentPage++) {
+            if (currentBatch?.videos?.length) {
+                allShorts = allShorts.concat(currentBatch.videos);
             }
 
-            // Construct the response
-            const response = {
-                shorts: processedShorts,
-                pagination: {
-                    has_more: currentBatch.has_continuation,
-                    current_page: page,
-                    items_per_page: limit,
-                    total_items: processedShorts.length
-                }
-            };
-            
-            res.json(response);
-        } else {
-            res.json({
-                shorts: [],
-                pagination: {
-                    has_more: false,
-                    current_page: page,
-                    items_per_page: limit,
-                    total_items: 0
-                }
-            });
+            if (currentPage < page && currentBatch?.has_continuation) {
+                currentBatch = await currentBatch.getContinuation();
+            }
         }
+
+        // Calculate the slice for the current page
+        const startIndex = (page - 1) * limit;
+        const endIndex = startIndex + limit;
+        const shortsForCurrentPage = allShorts.slice(startIndex, endIndex);
+
+        // Process shorts
+        const processedShorts = [];
+        let shortCount = 0;
+        for (const short of shortsForCurrentPage) {
+            try {
+                const videoId = short.on_tap_endpoint?.payload?.videoId;
+                if (!videoId) continue;
+
+                shortCount++;
+                console.log(`Processing short ${shortCount}/${shortsForCurrentPage.length}: ${videoId}`);
+
+                // Try to get shorts info, but handle parsing errors gracefully
+                let shortInfo = null;
+                try {
+                    shortInfo = await yt.getShortsVideoInfo(videoId);
+                } catch (error) {
+                    console.log(`Error getting shorts info for ${videoId}: ${error.message}`);
+                    // Continue with shortInfo as null
+                }
+
+                // Try to get regular info as fallback, but handle parsing errors gracefully
+                let regularInfo = null;
+                try {
+                    regularInfo = await yt.getInfo(videoId);
+                } catch (error) {
+                    console.log(`Error getting regular info for ${videoId}: ${error.message}`);
+                    // Continue with regularInfo as null
+                }
+
+                // If both API calls failed, extract basic info from the short object
+                if (!shortInfo && !regularInfo) {
+                    console.log(`Using fallback data extraction for ${videoId}`);
+                    
+                    const shortData = {
+                        video_id: videoId,
+                        title: short.overlay_metadata?.primary_text?.text || 
+                               short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
+                        description: '',
+                        thumbnail_url: getCleanThumbnailUrl(videoId),
+                        published_at: null,
+                        views: short.overlay_metadata?.secondary_text?.text?.replace(/[^0-9.KMB]/gi, '') || '0',
+                        channel_id: channel.metadata?.external_id || '',
+                        channel_title: channel.metadata?.title || '',
+                        duration: '',
+                        is_short: true
+                    };
+                    
+                    processedShorts.push(shortData);
+                    continue;
+                }
+
+                // Combine the info objects
+                const combinedInfo = {
+                    ...shortInfo,
+                    regularInfo: regularInfo,
+                    raw: shortInfo || regularInfo,
+                    primary_info: regularInfo?.primary_info || shortInfo?.primary_info
+                };
+
+                // Get exact view count
+                let viewCount = '';
+                if (regularInfo?.primary_info?.view_count?.view_count?.text) {
+                    // Use exact view count from view_count.text (e.g., "245,906 views")
+                    viewCount = regularInfo.primary_info.view_count.view_count.text.replace(/[^0-9]/g, '');
+                } else if (regularInfo?.primary_info?.view_count?.original_view_count) {
+                    // Try original_view_count as backup
+                    viewCount = regularInfo.primary_info.view_count.original_view_count;
+                } else if (regularInfo?.basic_info?.view_count) {
+                    // Fallback to basic_info view count
+                    viewCount = regularInfo.basic_info.view_count.toString();
+                } else if (short.overlay_metadata?.secondary_text?.text) {
+                    // Fallback to overlay metadata
+                    viewCount = short.overlay_metadata.secondary_text.text.replace(/[^0-9.KMB]/gi, '');
+                } else if (short.accessibility_text) {
+                    // Last resort: try to extract from accessibility text
+                    const viewMatch = short.accessibility_text.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i);
+                    viewCount = viewMatch ? viewMatch[1] : '0';
+                }
+
+                // Extract data directly from the combined info
+                const shortData = {
+                    video_id: videoId,
+                    title: short.overlay_metadata?.primary_text?.text || 
+                           combinedInfo.basic_info?.title ||
+                           short.accessibility_text?.split(',')[0]?.replace(/ - play Short$/, '') || '',
+                    description: combinedInfo.basic_info?.description || '',
+                    // Always use the clean thumbnail URL format
+                    thumbnail_url: getCleanThumbnailUrl(videoId),
+                    published_at: regularInfo?.primary_info?.published?.text ? 
+                                 new Date(regularInfo.primary_info.published.text).toISOString() : null,
+                    views: viewCount,
+                    channel_id: channel.metadata?.external_id || '',
+                    channel_title: channel.metadata?.title || '',
+                    duration: combinedInfo.basic_info?.duration?.text || '',
+                    is_short: true
+                };
+
+                processedShorts.push(shortData);
+
+            } catch (error) {
+                console.error(`Error processing short: ${error.message}`);
+                continue;
+            }
+        }
+
+        console.log(`Successfully processed ${processedShorts.length} shorts`);
+        res.json({
+            shorts: processedShorts,
+            pagination: {
+                has_more: currentBatch?.has_continuation || false,
+                current_page: page,
+                items_per_page: limit,
+                total_items: processedShorts.length
+            }
+        });
+
     } catch (error) {
-        console.error('Error fetching shorts:', error);
+        console.error('Channel shorts error:', error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Add a new debug endpoint for shorts
+app.get('/api/debug/shorts/:videoId', async (req, res) => {
+    try {
+        const results = {
+            shortsInfo: null,
+            regularInfo: null,
+            error: null
+        };
+
+        // Try getting shorts-specific info
+        try {
+            const shortsInfo = await yt.getShortsVideoInfo(req.params.videoId);
+            results.shortsInfo = {
+                basic_info: shortsInfo.basic_info,
+                primary_info: shortsInfo.primary_info,
+                secondary_info: shortsInfo.secondary_info,
+                microformat: shortsInfo.microformat,
+                video_details: shortsInfo.video_details,
+                overlay_metadata: shortsInfo.overlay_metadata,
+                published: shortsInfo.published,
+                publishedTimeText: shortsInfo.publishedTimeText,
+                dateText: shortsInfo.dateText,
+                // Include raw data for inspection
+                raw: shortsInfo
+            };
+        } catch (error) {
+            results.error = `Shorts info error: ${error.message}`;
+        }
+
+        // Also try getting regular video info as fallback
+        try {
+            const videoInfo = await yt.getInfo(req.params.videoId);
+            results.regularInfo = {
+                basic_info: videoInfo.basic_info,
+                primary_info: videoInfo.primary_info,
+                secondary_info: videoInfo.secondary_info,
+                microformat: videoInfo.microformat,
+                video_details: videoInfo.video_details,
+                // Include raw data for inspection
+                raw: videoInfo
+            };
+        } catch (error) {
+            if (!results.error) {
+                results.error = `Regular info error: ${error.message}`;
+            }
+        }
+
+        // Send the full response
+        res.header('Content-Type', 'application/json');
+        res.send(JSON.stringify(results, null, 2));
+
+    } catch (error) {
+        res.status(500).json({
+            error: error.message,
+            stack: error.stack
+        });
     }
 });
 
@@ -1323,7 +1305,7 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
                         has_endpoint: !!playlist.endpoint,
                         endpoint: playlist.endpoint?.browse_endpoint?.browse_id || '',
                         channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || '',
-                        channel_name: playlist.author?.name || channelInfo.title,
+                        channel_name: playlist.author?.name || '',
                         first_video_id: playlist.first_video_id || ''
                     };
                     
@@ -1409,13 +1391,10 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
     }
 });
 
-// Update the channel releases endpoint to extract release dates from primary_info
+// Add a new endpoint to fetch all releases with their videos
 app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
     try {
         console.log('Fetching releases with videos for channel:', req.params.channelId);
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 30;
-        
         const channel = await yt.getChannel(req.params.channelId);
         
         // Basic channel info
@@ -1426,27 +1405,20 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
         
         // Try to access the Releases tab
         let releasesWithVideos = [];
-        let hasMore = false;
-        
         try {
             // Get all playlists from releases tab
             let releasesTab = await channel.getTabByName('Releases');
             if (!releasesTab) {
                 return res.json({
                     channel: channelInfo,
-                    releases: [],
-                    pagination: {
-                        has_more: false,
-                        current_page: page,
-                        items_per_page: limit,
-                        total_items: 0
-                    }
+                    releases_count: 0,
+                    releases: []
                 });
             }
             
             console.log('Found Releases tab');
             
-            // Collect all playlists for the current page
+            // Collect all playlists
             const allPlaylists = [];
             
             // Add first page playlists
@@ -1455,11 +1427,11 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
                 console.log(`Added ${releasesTab.playlists.length} playlists from first page`);
             }
             
-            // Fetch continuations until we reach the requested page
+            // Fetch all continuations
             let currentPage = 1;
             let continuationTab = releasesTab;
             
-            while (currentPage < page && continuationTab.has_continuation) {
+            while (continuationTab.has_continuation) {
                 try {
                     currentPage++;
                     console.log(`Fetching continuation for page ${currentPage}...`);
@@ -1467,12 +1439,8 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
                     continuationTab = await continuationTab.getContinuation();
                     
                     if (continuationTab.playlists && continuationTab.playlists.length) {
-                        if (currentPage === page) {
-                            // This is the page we want
-                            allPlaylists.length = 0; // Clear previous pages
-                            allPlaylists.push(...continuationTab.playlists);
-                            console.log(`Added ${continuationTab.playlists.length} playlists from page ${currentPage}`);
-                        }
+                        allPlaylists.push(...continuationTab.playlists);
+                        console.log(`Added ${continuationTab.playlists.length} more playlists, total: ${allPlaylists.length}`);
                     } else {
                         console.log('No more playlists found in continuation');
                         break;
@@ -1483,15 +1451,10 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
                 }
             }
             
-            // Check if there are more pages
-            hasMore = continuationTab.has_continuation;
-            
-            // Take only the requested number of playlists
-            const playlistsForPage = allPlaylists.slice(0, limit);
-            console.log(`Processing ${playlistsForPage.length} playlists for page ${page}`);
+            console.log(`Total playlists found: ${allPlaylists.length}`);
             
             // Process each playlist to get its videos
-            for (const playlist of playlistsForPage) {
+            for (const playlist of allPlaylists) {
                 try {
                     const playlistId = playlist.id || playlist.playlist_id || '';
                     if (!playlistId) {
@@ -1504,31 +1467,6 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
                     // Get playlist details
                     const playlistDetails = await yt.getPlaylist(playlistId);
                     
-                    // Extract release date from playlist details
-                    let releaseDate = null;
-                    
-                    // First check if the playlist itself has a published date in primary_info
-                    if (playlistDetails.primary_info?.published?.text) {
-                        const publishedText = playlistDetails.primary_info.published.text;
-                        console.log(`Found published date in primary_info: ${publishedText}`);
-                        
-                        // Convert date formats like "Oct 15, 2020" to YYYY-MM-DD
-                        try {
-                            const date = new Date(publishedText);
-                            if (!isNaN(date.getTime())) {
-                                releaseDate = date.toISOString().split('T')[0]; // Get YYYY-MM-DD part
-                                console.log(`Converted to ISO date: ${releaseDate}`);
-                            }
-                        } catch (dateError) {
-                            console.error(`Error parsing date from primary_info: ${dateError.message}`);
-                        }
-                    }
-                    
-                    // If no release date found in primary_info, try other methods
-                    if (!releaseDate) {
-                        // ... existing fallback methods ...
-                    }
-                    
                     const releaseInfo = {
                         playlist_id: playlistId,
                         title: playlist.title?.text || 'Untitled',
@@ -1537,8 +1475,6 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
                         channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || channelInfo.id,
                         channel_name: playlist.author?.name || channelInfo.title,
                         videos_count: playlistDetails.videos?.length || 0,
-                        release_date: releaseDate,
-                        raw_metadata: playlistDetails.metadata || {},  // Include raw metadata for debugging
                         videos: []
                     };
                     
@@ -1578,281 +1514,14 @@ app.get('/api/channel/:channelId/releases/videos', async (req, res) => {
         // Construct the response
         const response = {
             channel: channelInfo,
-            releases: releasesWithVideos,
-            pagination: {
-                has_more: hasMore,
-                current_page: page,
-                items_per_page: limit,
-                total_items: releasesWithVideos.length
-            }
+            releases_count: releasesWithVideos.length,
+            releases: releasesWithVideos
         };
         
         res.json(response);
     } catch (error) {
         console.error('Error fetching releases with videos:', error);
         res.status(500).json({ error: error.message });
-    }
-});
-
-// Enhance the debug endpoint for playlists to extract more date information
-app.get('/api/debug/playlist/:playlistId', async (req, res) => {
-    try {
-        const playlistId = req.params.playlistId;
-        console.log(`Debug request for playlist: ${playlistId}`);
-        
-        // Get full playlist details
-        const playlistDetails = await yt.getPlaylist(playlistId);
-        
-        // Create a response object with all available data
-        const response = {
-            playlist_id: playlistId,
-            basic_info: {
-                title: playlistDetails.title || '',
-                description: playlistDetails.description?.text || '',
-                channel_id: playlistDetails.channel_id || playlistDetails.author?.id || '',
-                channel_name: playlistDetails.author?.name || '',
-                video_count: playlistDetails.videos?.length || 0
-            },
-            metadata: playlistDetails.metadata || {},
-            header: playlistDetails.header || {},
-            info: playlistDetails.info || {},
-            date_candidates: [],
-            primary_info_published: null
-        };
-        
-        // Extract all potential date fields
-        const dateCandidates = [];
-        
-        // Function to recursively search for date fields
-        function findDateFields(obj, path = '') {
-            if (!obj || typeof obj !== 'object') return;
-            
-            for (const [key, value] of Object.entries(obj)) {
-                const currentPath = path ? `${path}.${key}` : key;
-                
-                // Check if the key or value might contain date information
-                if (
-                    (typeof value === 'string' && (
-                        key.includes('date') || 
-                        key.includes('time') || 
-                        key.includes('publish') || 
-                        key.includes('created') || 
-                        key.includes('updated') ||
-                        /\d{4}-\d{2}-\d{2}/.test(value) ||
-                        /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4}\b/i.test(value)
-                    )) ||
-                    key.includes('date') || 
-                    key.includes('time') || 
-                    key.includes('publish') || 
-                    key.includes('created') || 
-                    key.includes('updated')
-                ) {
-                    dateCandidates.push({
-                        path: currentPath,
-                        key: key,
-                        value: value,
-                        type: typeof value
-                    });
-                }
-                
-                // Recursively search nested objects
-                if (typeof value === 'object' && value !== null) {
-                    findDateFields(value, currentPath);
-                }
-            }
-        }
-        
-        // Search for date fields in the entire response
-        findDateFields(playlistDetails);
-        response.date_candidates = dateCandidates;
-        
-        // Get detailed video information including publish dates
-        if (playlistDetails.videos && playlistDetails.videos.length > 0) {
-            response.video_details = [];
-            
-            // Check first 5 videos (increased from 3)
-            const videosToCheck = playlistDetails.videos.slice(0, 5);
-            
-            for (const video of videosToCheck) {
-                try {
-                    console.log(`Fetching detailed info for video: ${video.id}`);
-                    const videoInfo = await yt.getInfo(video.id);
-                    
-                    const videoDetail = {
-                        video_id: video.id,
-                        title: video.title?.text || '',
-                        publish_date: null,
-                        date_fields: [],
-                        full_info: {
-                            basic_info: videoInfo.basic_info || {},
-                            primary_info: videoInfo.primary_info || {},
-                            secondary_info: videoInfo.secondary_info || {},
-                            microformat: videoInfo.microformat || {}
-                        }
-                    };
-                    
-                    // Extract publish date from various locations
-                    if (videoInfo.basic_info?.publish_date) {
-                        videoDetail.publish_date = videoInfo.basic_info.publish_date;
-                        videoDetail.date_fields.push({
-                            path: 'basic_info.publish_date',
-                            value: videoInfo.basic_info.publish_date
-                        });
-                    }
-                    
-                    // Check primary info for dates
-                    if (videoInfo.primary_info?.date_text?.simpleText) {
-                        videoDetail.date_fields.push({
-                            path: 'primary_info.date_text.simpleText',
-                            value: videoInfo.primary_info.date_text.simpleText
-                        });
-                    }
-                    
-                    // Check microformat for dates
-                    if (videoInfo.microformat?.playerMicroformatRenderer?.publishDate) {
-                        videoDetail.date_fields.push({
-                            path: 'microformat.playerMicroformatRenderer.publishDate',
-                            value: videoInfo.microformat.playerMicroformatRenderer.publishDate
-                        });
-                    }
-                    
-                    if (videoInfo.microformat?.playerMicroformatRenderer?.uploadDate) {
-                        videoDetail.date_fields.push({
-                            path: 'microformat.playerMicroformatRenderer.uploadDate',
-                            value: videoInfo.microformat.playerMicroformatRenderer.uploadDate
-                        });
-                    }
-                    
-                    // Find all date fields in video info
-                    const videoDateFields = [];
-                    findDateFields(videoInfo, '', videoDateFields);
-                    
-                    videoDetail.date_fields = videoDetail.date_fields.concat(
-                        videoDateFields.filter(item => 
-                            !videoDetail.date_fields.some(existing => existing.path === item.path)
-                        )
-                    );
-                    
-                    response.video_details.push(videoDetail);
-                    
-                } catch (error) {
-                    console.error(`Error getting video info for ${video.id}:`, error.message);
-                    response.video_details.push({
-                        video_id: video.id,
-                        title: video.title?.text || '',
-                        error: error.message
-                    });
-                }
-            }
-            
-            // Try to determine the earliest publish date as the likely release date
-            const publishDates = response.video_details
-                .filter(v => v.publish_date)
-                .map(v => v.publish_date);
-                
-            if (publishDates.length > 0) {
-                // Sort dates to find the earliest one
-                publishDates.sort();
-                response.earliest_video_publish_date = publishDates[0];
-                console.log('Earliest video publish date:', response.earliest_video_publish_date);
-            }
-        }
-        
-        // Extract text dates from description
-        if (response.basic_info.description) {
-            const description = response.basic_info.description;
-            response.description_date_matches = [];
-            
-            // Check for date patterns in description
-            const datePatterns = [
-                { pattern: /Released on:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Released on YYYY-MM-DD' },
-                { pattern: /Release date:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Release date YYYY-MM-DD' },
-                { pattern: /Released:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Released YYYY-MM-DD' },
-                { pattern: /Published:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Published YYYY-MM-DD' },
-                { pattern: /Date:?\s*(\d{4}-\d{2}-\d{2})/i, type: 'Date YYYY-MM-DD' },
-                { pattern: /(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/, type: 'MM/DD/YYYY or DD/MM/YYYY' },
-                { pattern: /(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/, type: 'YYYY/MM/DD' },
-                { pattern: /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(\d{4})\b/i, type: 'Month DD, YYYY' }
-            ];
-            
-            for (const { pattern, type } of datePatterns) {
-                const matches = description.match(pattern);
-                if (matches) {
-                    response.description_date_matches.push({
-                        type: type,
-                        match: matches[0],
-                        groups: matches.slice(1)
-                    });
-                }
-            }
-        }
-        
-        // Check for year in title
-        if (response.basic_info.title) {
-            const yearMatch = response.basic_info.title.match(/\b(19\d{2}|20\d{2})\b/);
-            if (yearMatch) {
-                response.year_in_title = yearMatch[1];
-            }
-        }
-        
-        // Try to access the playlist's microformat data which often contains dates
-        if (playlistDetails.microformat) {
-            response.microformat = playlistDetails.microformat;
-        }
-        
-        // Try to access the playlist's page header which might contain dates
-        if (playlistDetails.page_header) {
-            response.page_header = playlistDetails.page_header;
-        }
-        
-        // Try to access the playlist's sidebar info which might contain dates
-        if (playlistDetails.sidebar_info) {
-            response.sidebar_info = playlistDetails.sidebar_info;
-        }
-        
-        // Add raw data for complete inspection if requested
-        if (req.query.raw === 'true') {
-            response.raw_data = playlistDetails;
-        }
-        
-        // Specifically check for primary_info.published
-        if (playlistDetails.primary_info?.published?.text) {
-            const publishedText = playlistDetails.primary_info.published.text;
-            response.primary_info_published = {
-                raw_text: publishedText,
-                parsed_date: null
-            };
-            
-            // Try to parse the date
-            try {
-                const date = new Date(publishedText);
-                if (!isNaN(date.getTime())) {
-                    response.primary_info_published.parsed_date = date.toISOString().split('T')[0];
-                }
-            } catch (dateError) {
-                console.error(`Error parsing date from primary_info: ${dateError.message}`);
-            }
-        }
-        
-        // Update the release date summary to include primary_info
-        response.release_date_summary = {
-            from_primary_info: response.primary_info_published?.parsed_date || null,
-            from_metadata: response.date_candidates.length > 0 ? 
-                response.date_candidates[0].value : null,
-            from_earliest_video: response.earliest_video_publish_date || null,
-            from_description: response.description_date_matches?.length > 0 ? 
-                response.description_date_matches[0].match : null,
-            from_title_year: response.year_in_title ? 
-                `${response.year_in_title}-01-01` : null
-        };
-        
-        res.json(response);
-    } catch (error) {
-        console.error('Error in playlist debug endpoint:', error);
-        res.status(500).json({ 
-            error: error.message,
-            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-        });
     }
 });
 
