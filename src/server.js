@@ -520,7 +520,7 @@ app.get('/api/playlist/:playlistId', async (req, res) => {
   }
 });
 
-// Update the shorts endpoint to use primary_info.published for dates
+// Update the shorts endpoint to handle undefined video IDs
 app.get('/api/channel/:channelId/shorts', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -531,7 +531,24 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
         
         // Get shorts tab
         const shortsTab = await channel.getShorts();
-        console.log(`Found ${shortsTab?.videos?.length} shorts`);
+        
+        if (!shortsTab?.videos || shortsTab.videos.length === 0) {
+            console.log('No shorts found for this channel');
+            return res.json({
+                shorts: [],
+                pagination: {
+                    has_more: false,
+                    current_page: page,
+                    items_per_page: limit,
+                    total_items: 0
+                }
+            });
+        }
+        
+        console.log(`Found ${shortsTab.videos.length} shorts`);
+        
+        // Debug the shorts structure
+        console.log('First short structure:', JSON.stringify(shortsTab.videos[0], null, 2));
 
         let currentBatch = shortsTab;
         let currentPage = 1;
@@ -551,6 +568,28 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
             for (const short of shorts) {
                 try {
                     shortCount++;
+                    
+                    // Check if the short has a valid ID
+                    if (!short.id) {
+                        console.log(`Short at index ${shortCount-1} has no ID, skipping detailed fetch`);
+                        
+                        // Still add basic info to the response
+                        processedShorts.push({
+                            video_id: short.videoId || `unknown-${shortCount}`,
+                            title: short.title?.text || 'Unknown title',
+                            description: short.description_snippet?.text || '',
+                            thumbnail_url: short.thumbnail?.[0]?.url || 
+                                         `https://i.ytimg.com/vi/unknown-${shortCount}/hqdefault.jpg`,
+                            published_at: null,
+                            views: short.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                            channel_id: channel.metadata?.external_id || '',
+                            channel_title: channel.metadata?.title || '',
+                            duration: short.duration?.text || '',
+                            is_short: true
+                        });
+                        continue;
+                    }
+                    
                     console.log(`Processing short ${shortCount}/${shorts.length}: ${short.id}`);
 
                     // Get detailed short info
@@ -558,7 +597,7 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
                     
                     // Extract basic info
                     const shortData = {
-                        video_id: short.id || short.videoId,
+                        video_id: short.id,
                         title: shortInfo.basic_info?.title || short.title?.text || '',
                         description: shortInfo.basic_info?.description || short.description_snippet?.text || '',
                         thumbnail_url: shortInfo.basic_info?.thumbnail?.[0]?.url || 
@@ -624,12 +663,13 @@ app.get('/api/channel/:channelId/shorts', async (req, res) => {
 
                     processedShorts.push(shortData);
                 } catch (error) {
-                    console.error(`Error processing short ${short.id}:`, error);
+                    console.error(`Error processing short ${short.id || 'unknown'}:`, error);
                     // Still add the short with basic info even if there was an error
                     processedShorts.push({
-                        video_id: short.id || short.videoId,
+                        video_id: short.id || short.videoId || `unknown-${shortCount}`,
                         title: short.title?.text || 'Unknown title',
-                        thumbnail_url: `https://i.ytimg.com/vi/${short.id}/hqdefault.jpg`,
+                        thumbnail_url: short.thumbnail?.[0]?.url || 
+                                     `https://i.ytimg.com/vi/${short.id || 'unknown'}/hqdefault.jpg`,
                         channel_id: channel.metadata?.external_id || '',
                         channel_title: channel.metadata?.title || '',
                         error: error.message,
