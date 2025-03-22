@@ -324,31 +324,41 @@ app.get('/api/channel/:channelId/videos', async (req, res) => {
                     console.log(`Processing video ${videoCount}/${videos.length}: ${video.id}`);
 
                     // Get detailed video info to ensure we have accurate publish dates
-                    const videoInfo = type === 'shorts' ?
-                        await yt.getInfo(video.id) :
-                        await yt.getInfo(video.id);
+                    const videoInfo = await yt.getInfo(video.id);
                     
                     // Extract basic info
                     const videoData = {
                         video_id: video.id || video.videoId,
-                        title: video.title?.text || videoInfo.basic_info?.title || '',
-                        description: video.description_snippet?.text || videoInfo.basic_info?.description || '',
-                        thumbnail_url: video.thumbnail?.[0]?.url || 
+                        title: videoInfo.basic_info?.title || video.title?.text || '',
+                        description: videoInfo.basic_info?.description || video.description_snippet?.text || '',
+                        thumbnail_url: videoInfo.basic_info?.thumbnail?.[0]?.url || 
+                                     video.thumbnail?.[0]?.url || 
                                      `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`,
                         published_at: null, // Will be set below
-                        views: video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
-                        channel_id: channel.metadata?.external_id || '',
-                        channel_title: channel.metadata?.title || '',
-                        duration: video.duration?.text || '',
+                        views: videoInfo.basic_info?.view_count || 
+                               video.view_count?.text?.replace(/[^0-9]/g, '') || '0',
+                        channel_id: videoInfo.basic_info?.channel?.id || 
+                                   channel.metadata?.external_id || '',
+                        channel_title: videoInfo.basic_info?.channel?.name || 
+                                      channel.metadata?.title || '',
+                        duration: videoInfo.basic_info?.duration || 
+                                video.duration?.text || '',
                         is_short: type === 'shorts'
                     };
 
-                    // Extract published date from videoInfo which is more reliable
+                    // Use the publish_date from videoInfo which is the most reliable source
                     if (videoInfo.basic_info?.publish_date) {
                         videoData.published_at = videoInfo.basic_info.publish_date;
                         console.log(`Using publish_date from videoInfo for ${video.id}: ${videoData.published_at}`);
-                    } else if (video.published?.text) {
-                        // Fallback to published text if available
+                    } 
+                    // If not available, try microformat which also often has accurate dates
+                    else if (videoInfo.microformat?.playerMicroformatRenderer?.publishDate) {
+                        videoData.published_at = videoInfo.microformat.playerMicroformatRenderer.publishDate;
+                        console.log(`Using microformat publishDate for ${video.id}: ${videoData.published_at}`);
+                    }
+                    // Last resort: try to parse from the text, but this is less reliable
+                    else if (video.published?.text) {
+                        console.log(`No exact date found, falling back to relative date for ${video.id}`);
                         const publishedText = video.published.text;
                         console.log(`Raw published date for ${video.id}: ${publishedText}`);
                         
