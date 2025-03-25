@@ -105,18 +105,32 @@ app.get('/api/video/:videoId', async (req, res) => {
     const simplifiedInfo = {
       video_id: videoInfo.basic_info.id,
       title: videoInfo.basic_info.title,
-      description: videoInfo.basic_info.description,
-      thumbnail_url: videoInfo.basic_info.thumbnail[0].url,
-      views: videoInfo.basic_info.view_count,
-      published_at: videoInfo.basic_info.publish_date,
-      channel_id: videoInfo.basic_info.channel?.id,
-      channel_title: videoInfo.basic_info.channel?.name,
-      channel_thumbnail: videoInfo.basic_info.channel?.thumbnails?.[0]?.url
+      views: videoInfo.basic_info.view_count
     };
     res.json(simplifiedInfo);
   } catch (error) {
     console.error('Video error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Add a simple endpoint just for view counts
+app.get('/api/video/:videoId/views', async (req, res) => {
+  try {
+    const videoInfo = await yt.getInfo(req.params.videoId);
+    
+    // Return just the view count
+    if (videoInfo && videoInfo.basic_info && videoInfo.basic_info.view_count) {
+      res.json({
+        video_id: videoInfo.basic_info.id,
+        views: videoInfo.basic_info.view_count
+      });
+    } else {
+      res.status(404).json({ error: 'View count not found' });
+    }
+  } catch (error) {
+    console.error('Video views error:', error);
+    res.status(500).json({ error: 'Failed to fetch view count' });
   }
 });
 
@@ -1343,8 +1357,12 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
                         continuationTab = await continuationTab.getContinuation();
                         
                         if (continuationTab.playlists && continuationTab.playlists.length) {
-                            allPlaylists.push(...continuationTab.playlists);
-                            console.log(`Added ${continuationTab.playlists.length} more playlists, total: ${allPlaylists.length}`);
+                            if (currentPage === page) {
+                                // This is the page we want
+                                allPlaylists.length = 0; // Clear previous pages
+                                allPlaylists.push(...continuationTab.playlists);
+                                console.log(`Added ${continuationTab.playlists.length} playlists from page ${currentPage}`);
+                            }
                         } else {
                             console.log('No more playlists found in continuation');
                             break;
@@ -1405,7 +1423,7 @@ app.get('/api/debug/channel/:channelId/releases', async (req, res) => {
                         thumbnail_url: playlist.thumbnail?.[0]?.url || '',
                         has_endpoint: !!playlist.endpoint,
                         endpoint: playlist.endpoint?.browse_endpoint?.browse_id || '',
-                        channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || '',
+                        channel_id: playlist.channel_id || playlist.author?.id || playlist.author?.channel_id || channelInfo.id,
                         channel_name: playlist.author?.name || channelInfo.title,
                         first_video_id: playlist.first_video_id || ''
                     };
