@@ -114,23 +114,94 @@ app.get('/api/video/:videoId', async (req, res) => {
   }
 });
 
-// Add a simple endpoint just for view counts
+// Add a simple endpoint just for view counts with better error handling
 app.get('/api/video/:videoId/views', async (req, res) => {
   try {
-    const videoInfo = await yt.getInfo(req.params.videoId);
+    console.log(`Fetching view count for video: ${req.params.videoId}`);
     
-    // Return just the view count
-    if (videoInfo && videoInfo.basic_info && videoInfo.basic_info.view_count) {
+    // Add validation for video ID
+    const videoId = req.params.videoId;
+    if (!videoId || videoId.length < 5) {
+      return res.status(400).json({ error: 'Invalid video ID' });
+    }
+    
+    const videoInfo = await yt.getInfo(videoId);
+    console.log(`Video info retrieved, checking for view count...`);
+    
+    // More detailed logging to debug the issue
+    if (!videoInfo) {
+      console.log('Video info is null or undefined');
+      return res.status(404).json({ error: 'Video not found' });
+    }
+    
+    if (!videoInfo.basic_info) {
+      console.log('basic_info is missing from response');
+      console.log('Available keys:', Object.keys(videoInfo));
+      return res.status(404).json({ error: 'Video basic info not found' });
+    }
+    
+    // Check if view count exists and log it
+    console.log('View count from API:', videoInfo.basic_info.view_count);
+    
+    // Return the view count if available
+    if (videoInfo.basic_info.view_count !== undefined) {
       res.json({
         video_id: videoInfo.basic_info.id,
         views: videoInfo.basic_info.view_count
       });
     } else {
-      res.status(404).json({ error: 'View count not found' });
+      // Try to find view count in other locations
+      let viewCount = null;
+      
+      // Check engagement panels
+      if (videoInfo.engagement_panels) {
+        console.log('Checking engagement panels for view count');
+        for (const panel of videoInfo.engagement_panels) {
+          if (panel.engagement_panel_content?.content?.video_description_content?.runs) {
+            for (const run of panel.engagement_panel_content.content.video_description_content.runs) {
+              if (run.text && run.text.includes('views')) {
+                const match = run.text.match(/([0-9,]+)\s+views/);
+                if (match) {
+                  viewCount = match[1].replace(/,/g, '');
+                  console.log('Found view count in engagement panel:', viewCount);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // Check video details
+      if (!viewCount && videoInfo.video_details) {
+        console.log('Checking video details for view count');
+        const viewText = videoInfo.video_details.view_count_text;
+        if (viewText) {
+          const match = viewText.match(/([0-9,]+)\s+views/);
+          if (match) {
+            viewCount = match[1].replace(/,/g, '');
+            console.log('Found view count in video details:', viewCount);
+          }
+        }
+      }
+      
+      if (viewCount) {
+        res.json({
+          video_id: videoInfo.basic_info.id,
+          views: viewCount
+        });
+      } else {
+        console.log('No view count found in any location');
+        res.status(404).json({ error: 'View count not found' });
+      }
     }
   } catch (error) {
     console.error('Video views error:', error);
-    res.status(500).json({ error: 'Failed to fetch view count' });
+    res.status(500).json({ 
+      error: 'Failed to fetch view count',
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
