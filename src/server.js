@@ -181,6 +181,94 @@ app.post('/api/videos/views/batch', async (req, res) => {
     }
 });
 
+// Debug endpoint to show full video info and view count extraction process
+app.get('/api/debug/:videoId', async (req, res) => {
+    try {
+        const videoId = req.params.videoId;
+        
+        if (!videoId || videoId.length < 5) {
+            return res.status(400).json({ error: 'Invalid video ID' });
+        }
+
+        console.log(`Debug request for video ${videoId}`);
+
+        // Try both methods to get video info
+        const basicInfo = await yt.getBasicInfo(videoId);
+        const fullInfo = await yt.getInfo(videoId);
+        
+        // Collect all possible view count locations
+        const viewCountPaths = {
+            basic_info: {
+                direct: basicInfo?.basic_info?.view_count,
+                stats: basicInfo?.basic_info?.stats?.views,
+                engagement: basicInfo?.basic_info?.engagement?.view_count
+            },
+            video_details: {
+                direct: fullInfo?.video_details?.view_count,
+                stats: fullInfo?.video_details?.stats?.views,
+                engagement: fullInfo?.video_details?.engagement?.view_count
+            },
+            page_data: {
+                view_count: fullInfo?.page_data?.view_count,
+                videoDetails: fullInfo?.page_data?.videoDetails?.viewCount
+            },
+            engagement_panels: fullInfo?.engagement_panels?.map(panel => ({
+                title: panel.title,
+                view_count: panel.view_count
+            }))
+        };
+
+        // Check video availability
+        const availability = {
+            basic_info: {
+                status: basicInfo?.playability_status?.status,
+                reason: basicInfo?.playability_status?.reason
+            },
+            full_info: {
+                status: fullInfo?.playability_status?.status,
+                reason: fullInfo?.playability_status?.reason
+            }
+        };
+
+        // Get final view count using our normal logic
+        let finalViewCount = null;
+        if (fullInfo?.video_details?.view_count) {
+            finalViewCount = fullInfo.video_details.view_count;
+        } else if (fullInfo?.basic_info?.view_count) {
+            finalViewCount = fullInfo.basic_info.view_count;
+        } else if (fullInfo?.page_data?.view_count) {
+            finalViewCount = fullInfo.page_data.view_count;
+        }
+
+        const response = {
+            video_id: videoId,
+            title: fullInfo?.basic_info?.title || fullInfo?.video_details?.title,
+            availability,
+            view_count_paths: viewCountPaths,
+            final_view_count: finalViewCount,
+            thumbnails: {
+                basic: basicInfo?.thumbnails,
+                full: fullInfo?.thumbnails
+            },
+            raw_response: {
+                basic_info: basicInfo,
+                full_info: fullInfo
+            }
+        };
+
+        console.log('Debug response:', JSON.stringify(response, null, 2));
+        res.json(response);
+
+    } catch (error) {
+        console.error('Debug endpoint error:', error);
+        res.status(500).json({
+            error: error.message,
+            stack: error.stack,
+            name: error.name
+        });
+    }
+});
+
 // Start server
 initializeYouTube().then(() => {
     app.listen(port, () => {
