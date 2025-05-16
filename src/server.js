@@ -42,12 +42,12 @@ const checkYouTubeClient = async (req, res, next) => {
 // Apply the middleware
 app.use('/api/*', checkYouTubeClient);
 
-// Basic health check endpoint
+// Health check endpoint
 app.get('/', (req, res) => {
     res.json({ status: 'View Count Update service is running' });
 });
 
-// Get view count endpoint - optimized for just view count
+// Single video view count endpoint
 app.get('/api/video/:videoId/views', async (req, res) => {
     try {
         const videoId = req.params.videoId;
@@ -56,96 +56,99 @@ app.get('/api/video/:videoId/views', async (req, res) => {
             return res.status(400).json({ error: 'Invalid video ID' });
         }
 
-        // Get basic video info with retries
-        let attempts = 0;
-        const maxAttempts = 3;
-        let videoInfo = null;
+        const videoInfo = await yt.getInfo(videoId);
+        console.log('Video info response:', JSON.stringify(videoInfo, null, 2));
 
-        while (attempts < maxAttempts) {
-            try {
-                // Using getBasicInfo() instead of getInfo() for faster response
-                videoInfo = await yt.getBasicInfo(videoId);
-                break;
-            } catch (error) {
-                attempts++;
-                if (attempts === maxAttempts) throw error;
-                await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
-            }
+        // Check video availability
+        if (videoInfo.playability_status?.status === 'ERROR') {
+            return res.status(404).json({ 
+                error: 'Video unavailable',
+                reason: videoInfo.playability_status.reason 
+            });
         }
 
-        // Extract view count using VideoViewCount class properties
-        const viewCount = videoInfo?.basic_info?.view_count;
+        // Try multiple paths to get view count
+        let viewCount = null;
         
-        if (typeof viewCount === 'undefined') {
+        if (videoInfo.video_details?.view_count) {
+            viewCount = videoInfo.video_details.view_count;
+        } else if (videoInfo.basic_info?.view_count) {
+            viewCount = videoInfo.basic_info.view_count;
+        } else if (videoInfo.page_data?.view_count) {
+            viewCount = videoInfo.page_data.view_count;
+        }
+
+        if (viewCount === null) {
             return res.status(404).json({ error: 'View count not found' });
         }
 
         res.json({
             video_id: videoId,
-            views: viewCount
+            views: viewCount,
+            title: videoInfo.basic_info?.title || videoInfo.video_details?.title
         });
 
     } catch (error) {
-        console.error('Video views error:', error);
-        res.status(500).json({ 
-            error: 'Failed to fetch view count',
-            message: error.message
-        });
+        console.error('Error fetching video info:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Batch view count update endpoint
+// Batch view count endpoint
 app.post('/api/videos/views/batch', async (req, res) => {
     try {
         const { videoIds } = req.body;
-        console.log('Received request for videos:', videoIds);
-
+        
         if (!Array.isArray(videoIds)) {
             return res.status(400).json({ error: 'videoIds must be an array' });
         }
 
         const results = [];
-        const batchSize = 5; // Process 5 videos concurrently
+        const batchSize = 5; // Process 5 videos at a time
 
         for (let i = 0; i < videoIds.length; i += batchSize) {
             const batch = videoIds.slice(i, i + batchSize);
-            console.log(`Processing batch ${i/batchSize + 1}, videos:`, batch);
+            console.log(`Processing batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(videoIds.length/batchSize)}`);
 
             const batchPromises = batch.map(async (videoId) => {
                 try {
-                    console.log(`Fetching info for video ${videoId}`);
-                    const videoInfo = await yt.getBasicInfo(videoId);
-                    console.log('Raw video info:', JSON.stringify(videoInfo, null, 2));
+                    const videoInfo = await yt.getInfo(videoId);
+                    
+                    // Check video availability
+                    if (videoInfo.playability_status?.status === 'ERROR') {
+                        return {
+                            video_id: videoId,
+                            error: videoInfo.playability_status.reason,
+                            success: false
+                        };
+                    }
 
-                    // Try different paths to get view count
+                    // Try multiple paths to get view count
                     let viewCount = null;
                     
-                    if (videoInfo?.basic_info?.view_count) {
-                        viewCount = videoInfo.basic_info.view_count;
-                    } else if (videoInfo?.video_details?.view_count) {
+                    if (videoInfo.video_details?.view_count) {
                         viewCount = videoInfo.video_details.view_count;
-                    } else if (videoInfo?.page_data?.view_count) {
+                    } else if (videoInfo.basic_info?.view_count) {
+                        viewCount = videoInfo.basic_info.view_count;
+                    } else if (videoInfo.page_data?.view_count) {
                         viewCount = videoInfo.page_data.view_count;
                     }
 
-                    console.log(`Video ${videoId} view count paths:`, {
-                        basic_info: videoInfo?.basic_info?.view_count,
-                        video_details: videoInfo?.video_details?.view_count,
-                        page_data: videoInfo?.page_data?.view_count,
-                        final_view_count: viewCount
-                    });
-
-                    // If view count is a string (like "1.5M"), convert it
-                    if (typeof viewCount === 'string') {
-                        viewCount = parseViewCount(viewCount);
+                    if (viewCount === null) {
+                        return {
+                            video_id: videoId,
+                            error: 'View count not found',
+                            success: false
+                        };
                     }
 
                     return {
                         video_id: videoId,
-                        views: viewCount || 0,
-                        success: true,
-                        raw_response: process.env.NODE_ENV === 'development' ? videoInfo : undefined
+                        views: viewCount,
+                        title: videoInfo.basic_info?.title || videoInfo.video_details?.title,
+                        success: true
                     };
+
                 } catch (error) {
                     console.error(`Error fetching video ${videoId}:`, error);
                     return {
@@ -157,24 +160,20 @@ app.post('/api/videos/views/batch', async (req, res) => {
             });
 
             const batchResults = await Promise.all(batchPromises);
-            console.log('Batch results:', batchResults);
             results.push(...batchResults);
 
-            // Add delay between batches to avoid rate limiting
+            // Add delay between batches
             if (i + batchSize < videoIds.length) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
 
-        const response = {
+        res.json({
             total: videoIds.length,
             successful: results.filter(r => r.success).length,
             failed: results.filter(r => !r.success).length,
             results
-        };
-        
-        console.log('Sending response:', response);
-        res.json(response);
+        });
 
     } catch (error) {
         console.error('Batch update error:', error);
@@ -182,36 +181,10 @@ app.post('/api/videos/views/batch', async (req, res) => {
     }
 });
 
-// Helper function to parse view count strings
-function parseViewCount(viewCount) {
-    if (typeof viewCount === 'number') return viewCount;
-    if (!viewCount) return 0;
-
-    // Remove any commas and spaces
-    viewCount = viewCount.replace(/,|\s/g, '');
-
-    // Handle K, M, B suffixes
-    const multipliers = {
-        'K': 1000,
-        'M': 1000000,
-        'B': 1000000000
-    };
-
-    for (const [suffix, multiplier] of Object.entries(multipliers)) {
-        if (viewCount.toUpperCase().endsWith(suffix)) {
-            const number = parseFloat(viewCount.slice(0, -1));
-            return Math.round(number * multiplier);
-        }
-    }
-
-    // Try parsing as a regular number
-    return parseInt(viewCount, 10) || 0;
-}
-
-// Initialize YouTube client before starting the server
+// Start server
 initializeYouTube().then(() => {
     app.listen(port, () => {
-        console.log(`View Count Update service running on port ${port}`);
+        console.log(`Server running on port ${port}`);
     });
 }).catch(error => {
     console.error('Failed to start server:', error);
