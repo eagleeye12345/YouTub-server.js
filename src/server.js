@@ -47,71 +47,36 @@ app.get('/', (req, res) => {
     res.json({ status: 'View Count Update service is running' });
 });
 
-// Get view count endpoint with optimized error handling and retries
+// Get view count endpoint - optimized for just view count
 app.get('/api/video/:videoId/views', async (req, res) => {
     try {
         const videoId = req.params.videoId;
         
-        // Basic validation
         if (!videoId || videoId.length < 5) {
             return res.status(400).json({ error: 'Invalid video ID' });
         }
 
-        // Get video info with retries
+        // Get basic video info with retries
         let attempts = 0;
         const maxAttempts = 3;
         let videoInfo = null;
 
         while (attempts < maxAttempts) {
             try {
-                videoInfo = await yt.getInfo(videoId);
+                // Using getBasicInfo() instead of getInfo() for faster response
+                videoInfo = await yt.getBasicInfo(videoId);
                 break;
             } catch (error) {
                 attempts++;
-                if (attempts === maxAttempts) {
-                    throw error;
-                }
-                await new Promise(resolve => setTimeout(resolve, 1000 * attempts)); // Exponential backoff
+                if (attempts === maxAttempts) throw error;
+                await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
             }
         }
 
-        if (!videoInfo?.basic_info) {
-            return res.status(404).json({ error: 'Video info not found' });
-        }
-
-        // Extract view count with fallbacks
-        let viewCount = null;
-
-        // Try basic_info view count first (most reliable)
-        if (videoInfo.basic_info.view_count !== undefined) {
-            viewCount = videoInfo.basic_info.view_count;
-        }
-        // Try engagement panels
-        else if (videoInfo.engagement_panels) {
-            for (const panel of videoInfo.engagement_panels) {
-                if (panel.engagement_panel_content?.content?.video_description_content?.runs) {
-                    for (const run of panel.engagement_panel_content.content.video_description_content.runs) {
-                        if (run.text && run.text.includes('views')) {
-                            const match = run.text.match(/([0-9,]+)\s+views/);
-                            if (match) {
-                                viewCount = parseInt(match[1].replace(/,/g, ''));
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (viewCount) break;
-            }
-        }
-        // Try video details
-        else if (videoInfo.video_details?.view_count_text) {
-            const match = videoInfo.video_details.view_count_text.match(/([0-9,]+)\s+views/);
-            if (match) {
-                viewCount = parseInt(match[1].replace(/,/g, ''));
-            }
-        }
-
-        if (viewCount === null) {
+        // Extract view count using VideoViewCount class properties
+        const viewCount = videoInfo?.basic_info?.view_count;
+        
+        if (typeof viewCount === 'undefined') {
             return res.status(404).json({ error: 'View count not found' });
         }
 
@@ -141,12 +106,12 @@ app.post('/api/videos/views/batch', async (req, res) => {
         const results = [];
         const batchSize = 5; // Process 5 videos concurrently
 
-        // Process videos in batches
         for (let i = 0; i < videoIds.length; i += batchSize) {
             const batch = videoIds.slice(i, i + batchSize);
             const batchPromises = batch.map(async (videoId) => {
                 try {
-                    const videoInfo = await yt.getInfo(videoId);
+                    // Using getBasicInfo() for faster response
+                    const videoInfo = await yt.getBasicInfo(videoId);
                     return {
                         video_id: videoId,
                         views: videoInfo.basic_info?.view_count || 0,
@@ -164,7 +129,7 @@ app.post('/api/videos/views/batch', async (req, res) => {
             const batchResults = await Promise.all(batchPromises);
             results.push(...batchResults);
 
-            // Add a small delay between batches to avoid rate limiting
+            // Add delay between batches to avoid rate limiting
             if (i + batchSize < videoIds.length) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
