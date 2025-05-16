@@ -94,7 +94,39 @@ app.get('/api/video/:videoId/views', async (req, res) => {
     }
 });
 
-// Batch view count endpoint
+// Function to extract view count from various formats
+function extractViewCount(videoInfo) {
+    // Try to get view count from VideoViewCount type
+    if (videoInfo?.video_details?.view_count?.original_view_count) {
+        return parseInt(videoInfo.video_details.view_count.original_view_count, 10);
+    }
+    
+    if (videoInfo?.basic_info?.view_count?.original_view_count) {
+        return parseInt(videoInfo.basic_info.view_count.original_view_count, 10);
+    }
+
+    // Try to get from view_count object
+    if (videoInfo?.video_details?.view_count?.view_count?.text) {
+        return parseInt(videoInfo.video_details.view_count.view_count.text.replace(/[^0-9]/g, ''), 10);
+    }
+
+    // Try other paths
+    const viewCount = videoInfo?.video_details?.view_count || 
+                     videoInfo?.basic_info?.view_count ||
+                     videoInfo?.page_data?.view_count;
+
+    if (typeof viewCount === 'number') {
+        return viewCount;
+    }
+
+    if (typeof viewCount === 'string') {
+        return parseInt(viewCount.replace(/[^0-9]/g, ''), 10);
+    }
+
+    return null;
+}
+
+// Update the batch endpoint to use the new function
 app.post('/api/videos/views/batch', async (req, res) => {
     try {
         const { videoIds } = req.body;
@@ -104,7 +136,7 @@ app.post('/api/videos/views/batch', async (req, res) => {
         }
 
         const results = [];
-        const batchSize = 5; // Process 5 videos at a time
+        const batchSize = 5;
 
         for (let i = 0; i < videoIds.length; i += batchSize) {
             const batch = videoIds.slice(i, i + batchSize);
@@ -123,18 +155,10 @@ app.post('/api/videos/views/batch', async (req, res) => {
                         };
                     }
 
-                    // Try multiple paths to get view count
-                    let viewCount = null;
-                    
-                    if (videoInfo.video_details?.view_count) {
-                        viewCount = videoInfo.video_details.view_count;
-                    } else if (videoInfo.basic_info?.view_count) {
-                        viewCount = videoInfo.basic_info.view_count;
-                    } else if (videoInfo.page_data?.view_count) {
-                        viewCount = videoInfo.page_data.view_count;
-                    }
+                    const viewCount = extractViewCount(videoInfo);
 
                     if (viewCount === null) {
+                        console.log('View count not found for video:', videoId, 'Full response:', JSON.stringify(videoInfo, null, 2));
                         return {
                             video_id: videoId,
                             error: 'View count not found',
@@ -162,7 +186,6 @@ app.post('/api/videos/views/batch', async (req, res) => {
             const batchResults = await Promise.all(batchPromises);
             results.push(...batchResults);
 
-            // Add delay between batches
             if (i + batchSize < videoIds.length) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
@@ -198,15 +221,17 @@ app.get('/api/debug/:videoId', async (req, res) => {
         
         // Collect all possible view count locations
         const viewCountPaths = {
-            basic_info: {
-                direct: basicInfo?.basic_info?.view_count,
-                stats: basicInfo?.basic_info?.stats?.views,
-                engagement: basicInfo?.basic_info?.engagement?.view_count
-            },
             video_details: {
-                direct: fullInfo?.video_details?.view_count,
-                stats: fullInfo?.video_details?.stats?.views,
-                engagement: fullInfo?.video_details?.engagement?.view_count
+                original: fullInfo?.video_details?.view_count?.original_view_count,
+                formatted: fullInfo?.video_details?.view_count?.view_count?.text,
+                short: fullInfo?.video_details?.view_count?.short_view_count?.text,
+                extra_short: fullInfo?.video_details?.view_count?.extra_short_view_count?.text
+            },
+            basic_info: {
+                original: basicInfo?.basic_info?.view_count?.original_view_count,
+                formatted: basicInfo?.basic_info?.view_count?.view_count?.text,
+                short: basicInfo?.basic_info?.view_count?.short_view_count?.text,
+                extra_short: basicInfo?.basic_info?.view_count?.extra_short_view_count?.text
             },
             page_data: {
                 view_count: fullInfo?.page_data?.view_count,
