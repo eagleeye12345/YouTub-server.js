@@ -98,6 +98,7 @@ app.get('/api/video/:videoId/views', async (req, res) => {
 app.post('/api/videos/views/batch', async (req, res) => {
     try {
         const { videoIds } = req.body;
+        console.log('Received request for videos:', videoIds);
 
         if (!Array.isArray(videoIds)) {
             return res.status(400).json({ error: 'videoIds must be an array' });
@@ -108,16 +109,22 @@ app.post('/api/videos/views/batch', async (req, res) => {
 
         for (let i = 0; i < videoIds.length; i += batchSize) {
             const batch = videoIds.slice(i, i + batchSize);
+            console.log(`Processing batch ${i/batchSize + 1}, videos:`, batch);
+
             const batchPromises = batch.map(async (videoId) => {
                 try {
-                    // Using getBasicInfo() for faster response
+                    console.log(`Fetching info for video ${videoId}`);
                     const videoInfo = await yt.getBasicInfo(videoId);
+                    const viewCount = videoInfo?.basic_info?.view_count;
+                    console.log(`Video ${videoId} view count:`, viewCount);
+
                     return {
                         video_id: videoId,
-                        views: videoInfo.basic_info?.view_count || 0,
+                        views: viewCount || 0,
                         success: true
                     };
                 } catch (error) {
+                    console.error(`Error fetching video ${videoId}:`, error);
                     return {
                         video_id: videoId,
                         error: error.message,
@@ -127,20 +134,23 @@ app.post('/api/videos/views/batch', async (req, res) => {
             });
 
             const batchResults = await Promise.all(batchPromises);
+            console.log('Batch results:', batchResults);
             results.push(...batchResults);
 
-            // Add delay between batches to avoid rate limiting
             if (i + batchSize < videoIds.length) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
 
-        res.json({
+        const response = {
             total: videoIds.length,
             successful: results.filter(r => r.success).length,
             failed: results.filter(r => !r.success).length,
             results
-        });
+        };
+        
+        console.log('Sending response:', response);
+        res.json(response);
 
     } catch (error) {
         console.error('Batch update error:', error);
