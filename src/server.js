@@ -115,13 +115,36 @@ app.post('/api/videos/views/batch', async (req, res) => {
                 try {
                     console.log(`Fetching info for video ${videoId}`);
                     const videoInfo = await yt.getBasicInfo(videoId);
-                    const viewCount = videoInfo?.basic_info?.view_count;
-                    console.log(`Video ${videoId} view count:`, viewCount);
+                    console.log('Raw video info:', JSON.stringify(videoInfo, null, 2));
+
+                    // Try different paths to get view count
+                    let viewCount = null;
+                    
+                    if (videoInfo?.basic_info?.view_count) {
+                        viewCount = videoInfo.basic_info.view_count;
+                    } else if (videoInfo?.video_details?.view_count) {
+                        viewCount = videoInfo.video_details.view_count;
+                    } else if (videoInfo?.page_data?.view_count) {
+                        viewCount = videoInfo.page_data.view_count;
+                    }
+
+                    console.log(`Video ${videoId} view count paths:`, {
+                        basic_info: videoInfo?.basic_info?.view_count,
+                        video_details: videoInfo?.video_details?.view_count,
+                        page_data: videoInfo?.page_data?.view_count,
+                        final_view_count: viewCount
+                    });
+
+                    // If view count is a string (like "1.5M"), convert it
+                    if (typeof viewCount === 'string') {
+                        viewCount = parseViewCount(viewCount);
+                    }
 
                     return {
                         video_id: videoId,
                         views: viewCount || 0,
-                        success: true
+                        success: true,
+                        raw_response: process.env.NODE_ENV === 'development' ? videoInfo : undefined
                     };
                 } catch (error) {
                     console.error(`Error fetching video ${videoId}:`, error);
@@ -137,6 +160,7 @@ app.post('/api/videos/views/batch', async (req, res) => {
             console.log('Batch results:', batchResults);
             results.push(...batchResults);
 
+            // Add delay between batches to avoid rate limiting
             if (i + batchSize < videoIds.length) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
@@ -157,6 +181,32 @@ app.post('/api/videos/views/batch', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// Helper function to parse view count strings
+function parseViewCount(viewCount) {
+    if (typeof viewCount === 'number') return viewCount;
+    if (!viewCount) return 0;
+
+    // Remove any commas and spaces
+    viewCount = viewCount.replace(/,|\s/g, '');
+
+    // Handle K, M, B suffixes
+    const multipliers = {
+        'K': 1000,
+        'M': 1000000,
+        'B': 1000000000
+    };
+
+    for (const [suffix, multiplier] of Object.entries(multipliers)) {
+        if (viewCount.toUpperCase().endsWith(suffix)) {
+            const number = parseFloat(viewCount.slice(0, -1));
+            return Math.round(number * multiplier);
+        }
+    }
+
+    // Try parsing as a regular number
+    return parseInt(viewCount, 10) || 0;
+}
 
 // Initialize YouTube client before starting the server
 initializeYouTube().then(() => {
