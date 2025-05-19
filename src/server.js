@@ -22,22 +22,50 @@ async function initializeYouTube() {
             cache: false,
             generate_session_locally: true,
             fetch: async (input, init) => {
-                // Handle both URL string and Request object
-                const url = input instanceof Request ? input.url : input;
-                
-                const timeout = new Promise((_, reject) => {
-                    setTimeout(() => reject(new Error('Request timed out')), 10000);
-                });
-                
-                const request = fetch(url, {
-                    ...init,
-                    headers: {
-                        ...(init?.headers || {}),
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                try {
+                    // Handle Request object
+                    if (input instanceof Request) {
+                        const originalRequest = input;
+                        init = {
+                            method: originalRequest.method,
+                            headers: originalRequest.headers,
+                            body: originalRequest.body,
+                            mode: originalRequest.mode,
+                            credentials: originalRequest.credentials,
+                            ...init
+                        };
+                        input = originalRequest.url;
                     }
-                });
-                
-                return Promise.race([request, timeout]);
+
+                    // Add timeout
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+                    // Add headers
+                    init = {
+                        ...init,
+                        signal: controller.signal,
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                            ...(init?.headers || {})
+                        }
+                    };
+
+                    try {
+                        const response = await fetch(input, init);
+                        clearTimeout(timeoutId);
+                        return response;
+                    } catch (error) {
+                        clearTimeout(timeoutId);
+                        if (error.name === 'AbortError') {
+                            throw new Error('Request timed out');
+                        }
+                        throw error;
+                    }
+                } catch (error) {
+                    console.error('Fetch error:', error);
+                    throw error;
+                }
             }
         });
         ytInitialized = true;
@@ -75,65 +103,18 @@ app.get('/', (req, res) => {
     });
 });
 
-// Function to extract view count from various formats
+// Function to extract view count
 function extractViewCount(videoInfo) {
     try {
-        // Check primary_info path (most reliable)
-        if (videoInfo?.primary_info?.view_count?.view_count?.text) {
-            return parseInt(videoInfo.primary_info.view_count.view_count.text.replace(/[^0-9]/g, ''), 10);
-        }
-
-        // Check primary_info original count
-        if (videoInfo?.primary_info?.view_count?.original_view_count) {
-            return parseInt(videoInfo.primary_info.view_count.original_view_count, 10);
-        }
-
-        // Check basic_info path
-        if (videoInfo?.basic_info?.view_count) {
+        // Check basic_info path (most reliable)
+        if (videoInfo?.basic_info?.view_count !== undefined) {
             return parseInt(videoInfo.basic_info.view_count.toString().replace(/[^0-9]/g, ''), 10);
         }
 
-        // Check video_details path
-        if (videoInfo?.video_details?.view_count_text) {
-            const match = videoInfo.video_details.view_count_text.match(/([0-9,]+)\s+views/);
-            if (match) {
-                return parseInt(match[1].replace(/,/g, ''), 10);
-            }
-        }
-
-        // Check engagement panels
-        if (videoInfo?.engagement_panels) {
-            for (const panel of videoInfo.engagement_panels) {
-                if (panel.engagement_panel_content?.content?.video_description_content?.runs) {
-                    for (const run of panel.engagement_panel_content.content.video_description_content.runs) {
-                        if (run.text && run.text.includes('views')) {
-                            const match = run.text.match(/([0-9,]+)\s+views/);
-                            if (match) {
-                                return parseInt(match[1].replace(/,/g, ''), 10);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check overlay metadata
-        if (videoInfo?.overlay_metadata?.secondary_text?.text) {
-            const viewText = videoInfo.overlay_metadata.secondary_text.text;
-            const match = viewText.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i);
-            if (match) {
-                const viewCount = match[1];
-                if (viewCount.endsWith('B')) {
-                    return Math.floor(parseFloat(viewCount.replace('B', '')) * 1000000000);
-                }
-                if (viewCount.endsWith('M')) {
-                    return Math.floor(parseFloat(viewCount.replace('M', '')) * 1000000);
-                }
-                if (viewCount.endsWith('K')) {
-                    return Math.floor(parseFloat(viewCount.replace('K', '')) * 1000);
-                }
-                return parseInt(viewCount, 10);
-            }
+        // Log available paths for debugging
+        console.log('Available paths:', Object.keys(videoInfo || {}));
+        if (videoInfo?.basic_info) {
+            console.log('Basic info keys:', Object.keys(videoInfo.basic_info));
         }
 
         return null;
@@ -147,18 +128,41 @@ function extractViewCount(videoInfo) {
 app.get('/api/views/:videoId', async (req, res) => {
     try {
         const videoId = req.params.videoId;
-        console.log(`Fetching view count for video ${videoId}`);
+        console.log(`Fetching view count for video: ${videoId}`);
+        
+        // Add validation for video ID
+        if (!videoId || videoId.length < 5) {
+            return res.status(400).json({ error: 'Invalid video ID' });
+        }
         
         const videoInfo = await yt.getInfo(videoId);
-        const viewCount = extractViewCount(videoInfo);
+        console.log(`Video info retrieved, checking for view count...`);
         
-        if (!viewCount) {
-            console.log(`No view count found for video ${videoId}`);
-            return res.status(404).json({ error: 'View count not found' });
+        // More detailed logging to debug the issue
+        if (!videoInfo) {
+            console.log('Video info is null or undefined');
+            return res.status(404).json({ error: 'Video not found' });
         }
-
-        console.log(`Successfully got view count for ${videoId}: ${viewCount}`);
-        res.json({ views: viewCount });
+        
+        if (!videoInfo.basic_info) {
+            console.log('basic_info is missing from response');
+            console.log('Available keys:', Object.keys(videoInfo));
+            return res.status(404).json({ error: 'Video basic info not found' });
+        }
+        
+        // Check if view count exists and log it
+        console.log('View count from API:', videoInfo.basic_info.view_count);
+        
+        // Return the view count if available
+        if (videoInfo.basic_info.view_count !== undefined) {
+            res.json({
+                video_id: videoInfo.basic_info.id,
+                views: videoInfo.basic_info.view_count
+            });
+        } else {
+            console.log('View count not found in response');
+            res.status(404).json({ error: 'View count not found' });
+        }
 
     } catch (error) {
         console.error(`Error fetching view count for ${req.params.videoId}:`, error);
@@ -166,35 +170,22 @@ app.get('/api/views/:videoId', async (req, res) => {
     }
 });
 
-// Debug endpoint that shows all possible view count paths
+// Debug endpoint
 app.get('/api/debug/:videoId', async (req, res) => {
     try {
         const videoId = req.params.videoId;
         console.log(`Debug request for video ${videoId}`);
         
         const videoInfo = await yt.getInfo(videoId);
-        const viewCount = extractViewCount(videoInfo);
         
-        // Show all possible paths where view count might be found
-        const viewPaths = {
-            primary_info: {
-                formatted: videoInfo?.primary_info?.view_count?.view_count?.text,
-                original: videoInfo?.primary_info?.view_count?.original_view_count
-            },
-            basic_info: videoInfo?.basic_info?.view_count,
-            video_details: videoInfo?.video_details?.view_count_text,
-            engagement_panels: videoInfo?.engagement_panels?.map(panel => 
-                panel.engagement_panel_content?.content?.video_description_content?.runs
-                ?.find(run => run.text?.includes('views'))?.text
-            ).filter(Boolean),
-            overlay_metadata: videoInfo?.overlay_metadata?.secondary_text?.text,
-            final_view_count: viewCount
-        };
-
         res.json({
             video_id: videoId,
-            view_count: viewCount,
-            view_count_paths: viewPaths
+            basic_info: {
+                id: videoInfo?.basic_info?.id,
+                title: videoInfo?.basic_info?.title,
+                views: videoInfo?.basic_info?.view_count
+            },
+            available_keys: Object.keys(videoInfo || {})
         });
 
     } catch (error) {
