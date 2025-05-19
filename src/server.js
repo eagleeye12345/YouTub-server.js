@@ -23,39 +23,26 @@ async function initializeYouTube() {
             generate_session_locally: true,
             fetch: async (input, init) => {
                 try {
-                    // Handle Request object properly
-                    let url = input;
-                    let options = init || {};
-
-                    if (input instanceof Request) {
-                        url = input.url;
-                        options = {
-                            method: input.method,
-                            headers: Object.fromEntries(input.headers.entries()),
-                            body: input.body,
-                            mode: input.mode,
-                            credentials: input.credentials,
-                            ...init
-                        };
-                    }
-
-                    // Add timeout using AbortController
+                    // Create a new Request object
+                    const request = input instanceof Request ? input : new Request(input, init);
+                    
+                    // Add timeout
                     const controller = new AbortController();
                     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-                    try {
-                        // Make the request with proper headers
-                        const response = await globalThis.fetch(url, {
-                            ...options,
-                            signal: controller.signal,
-                            headers: {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                                'Accept-Language': 'en-US,en;q=0.5',
-                                ...(options.headers || {})
-                            }
-                        });
+                    // Create new request with our headers
+                    const newRequest = new Request(request, {
+                        signal: controller.signal,
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.5',
+                            ...Object.fromEntries(request.headers.entries())
+                        }
+                    });
 
+                    try {
+                        const response = await fetch(newRequest);
                         clearTimeout(timeoutId);
                         return response;
                     } catch (error) {
