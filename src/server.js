@@ -22,10 +22,21 @@ async function initializeYouTube() {
             cache: false,
             generate_session_locally: true,
             fetch: async (input, init) => {
+                // Handle both URL string and Request object
+                const url = input instanceof Request ? input.url : input;
+                
                 const timeout = new Promise((_, reject) => {
                     setTimeout(() => reject(new Error('Request timed out')), 10000);
                 });
-                const request = fetch(input, init);
+                
+                const request = fetch(url, {
+                    ...init,
+                    headers: {
+                        ...(init?.headers || {}),
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
+                });
+                
                 return Promise.race([request, timeout]);
             }
         });
