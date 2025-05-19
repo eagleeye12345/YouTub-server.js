@@ -47,8 +47,8 @@ app.get('/', (req, res) => {
     res.json({ status: 'View Count Update service is running' });
 });
 
-// Get view count endpoint - optimized for just view count
-app.get('/api/video/:videoId/views', async (req, res) => {
+// Get video info endpoint - based on the working src/server.js implementation
+app.get('/api/video/:videoId', async (req, res) => {
     try {
         const videoId = req.params.videoId;
         
@@ -56,45 +56,34 @@ app.get('/api/video/:videoId/views', async (req, res) => {
             return res.status(400).json({ error: 'Invalid video ID' });
         }
 
-        // Get basic video info with retries
-        let attempts = 0;
-        const maxAttempts = 3;
-        let videoInfo = null;
-
-        while (attempts < maxAttempts) {
-            try {
-                // Using getBasicInfo() instead of getInfo() for faster response
-                videoInfo = await yt.getBasicInfo(videoId);
-                break;
-            } catch (error) {
-                attempts++;
-                if (attempts === maxAttempts) throw error;
-                await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
-            }
-        }
-
-        // Extract view count using VideoViewCount class properties
-        const viewCount = videoInfo?.basic_info?.view_count;
+        console.log(`Fetching info for video: ${videoId}`);
+        const videoInfo = await yt.getInfo(videoId);
         
-        if (typeof viewCount === 'undefined') {
-            return res.status(404).json({ error: 'View count not found' });
-        }
+        // Extract view count using the same path as src/server.js
+        const simplifiedInfo = {
+            video_id: videoInfo.basic_info.id,
+            title: videoInfo.basic_info.title,
+            views: videoInfo.basic_info.view_count
+        };
 
-        res.json({
-            video_id: videoId,
-            views: viewCount
+        console.log('Video info:', {
+            id: simplifiedInfo.video_id,
+            title: simplifiedInfo.title,
+            views: simplifiedInfo.views
         });
 
+        res.json(simplifiedInfo);
+
     } catch (error) {
-        console.error('Video views error:', error);
+        console.error('Video error:', error);
         res.status(500).json({ 
-            error: 'Failed to fetch view count',
-            message: error.message
+            error: 'Failed to fetch video info',
+            message: error.message 
         });
     }
 });
 
-// Batch view count update endpoint
+// Batch endpoint using the same approach
 app.post('/api/videos/views/batch', async (req, res) => {
     try {
         const { videoIds } = req.body;
@@ -105,7 +94,7 @@ app.post('/api/videos/views/batch', async (req, res) => {
         }
 
         const results = [];
-        const batchSize = 5; // Process 5 videos concurrently
+        const batchSize = 5;
 
         for (let i = 0; i < videoIds.length; i += batchSize) {
             const batch = videoIds.slice(i, i + batchSize);
@@ -113,59 +102,13 @@ app.post('/api/videos/views/batch', async (req, res) => {
 
             const batchPromises = batch.map(async (videoId) => {
                 try {
-                    console.log(`Fetching info for video ${videoId}`);
-                    const videoInfo = await yt.getBasicInfo(videoId);
-                    
-                    // Check if video is unavailable
-                    if (videoInfo?.playability_status?.status === 'ERROR' || 
-                        videoInfo?.playability_status?.reason?.includes('unavailable') ||
-                        (videoInfo?.thumbnails?.[0]?.url || '').includes('meh7-vflGevej7.png')) {
-                        console.log(`Video ${videoId} is unavailable`);
-                        return {
-                            video_id: videoId,
-                            error: 'Video unavailable',
-                            success: false
-                        };
-                    }
-
-                    // Try different paths to get view count
-                    let viewCount = null;
-                    
-                    if (videoInfo?.basic_info?.view_count) {
-                        viewCount = videoInfo.basic_info.view_count;
-                    } else if (videoInfo?.video_details?.view_count) {
-                        viewCount = videoInfo.video_details.view_count;
-                    } else if (videoInfo?.page_data?.view_count) {
-                        viewCount = videoInfo.page_data.view_count;
-                    }
-
-                    console.log(`Video ${videoId} view count paths:`, {
-                        basic_info: videoInfo?.basic_info?.view_count,
-                        video_details: videoInfo?.video_details?.view_count,
-                        page_data: videoInfo?.page_data?.view_count,
-                        final_view_count: viewCount,
-                        playability_status: videoInfo?.playability_status
-                    });
-
-                    // If no view count found, mark as failed
-                    if (viewCount === null || viewCount === undefined) {
-                        return {
-                            video_id: videoId,
-                            error: 'View count not found',
-                            success: false
-                        };
-                    }
-
-                    // If view count is a string (like "1.5M"), convert it
-                    if (typeof viewCount === 'string') {
-                        viewCount = parseViewCount(viewCount);
-                    }
+                    const videoInfo = await yt.getInfo(videoId);
+                    const viewCount = videoInfo?.basic_info?.view_count;
 
                     return {
                         video_id: videoId,
                         views: viewCount,
-                        success: true,
-                        raw_response: process.env.NODE_ENV === 'development' ? videoInfo : undefined
+                        success: true
                     };
                 } catch (error) {
                     console.error(`Error fetching video ${videoId}:`, error);
@@ -178,7 +121,6 @@ app.post('/api/videos/views/batch', async (req, res) => {
             });
 
             const batchResults = await Promise.all(batchPromises);
-            console.log('Batch results:', batchResults);
             results.push(...batchResults);
 
             if (i + batchSize < videoIds.length) {
@@ -193,7 +135,6 @@ app.post('/api/videos/views/batch', async (req, res) => {
             results
         };
         
-        console.log('Sending response:', response);
         res.json(response);
 
     } catch (error) {
@@ -201,32 +142,6 @@ app.post('/api/videos/views/batch', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-
-// Helper function to parse view count strings
-function parseViewCount(viewCount) {
-    if (typeof viewCount === 'number') return viewCount;
-    if (!viewCount) return 0;
-
-    // Remove any commas and spaces
-    viewCount = viewCount.replace(/,|\s/g, '');
-
-    // Handle K, M, B suffixes
-    const multipliers = {
-        'K': 1000,
-        'M': 1000000,
-        'B': 1000000000
-    };
-
-    for (const [suffix, multiplier] of Object.entries(multipliers)) {
-        if (viewCount.toUpperCase().endsWith(suffix)) {
-            const number = parseFloat(viewCount.slice(0, -1));
-            return Math.round(number * multiplier);
-        }
-    }
-
-    // Try parsing as a regular number
-    return parseInt(viewCount, 10) || 0;
-}
 
 // Debug endpoint to show all video info
 app.get('/api/video/:videoId/debug', async (req, res) => {
@@ -279,78 +194,6 @@ app.get('/api/video/:videoId/debug', async (req, res) => {
             error: 'Failed to fetch video info',
             message: error.message,
             stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-        });
-    }
-});
-
-// Also update your existing view count endpoint to use both methods
-app.get('/api/video/:videoId', async (req, res) => {
-    try {
-        const videoId = req.params.videoId;
-        
-        if (!videoId || videoId.length < 5) {
-            return res.status(400).json({ error: 'Invalid video ID' });
-        }
-
-        console.log(`Fetching view count for video: ${videoId}`);
-        
-        // Try both methods to get view count
-        const basicInfo = await yt.getBasicInfo(videoId);
-        const fullInfo = await yt.getInfo(videoId);
-        
-        let viewCount = null;
-        
-        // Try all possible paths to find view count
-        const possiblePaths = [
-            basicInfo?.basic_info?.view_count,
-            basicInfo?.video_details?.view_count,
-            basicInfo?.page_data?.view_count,
-            fullInfo?.basic_info?.view_count,
-            fullInfo?.video_details?.view_count,
-            fullInfo?.page_data?.view_count
-        ];
-
-        // Log all possible paths for debugging
-        console.log('Possible view count paths:', {
-            basic_info: {
-                basic_info: basicInfo?.basic_info?.view_count,
-                video_details: basicInfo?.video_details?.view_count,
-                page_data: basicInfo?.page_data?.view_count
-            },
-            full_info: {
-                basic_info: fullInfo?.basic_info?.view_count,
-                video_details: fullInfo?.video_details?.view_count,
-                page_data: fullInfo?.page_data?.view_count
-            }
-        });
-
-        // Find first valid view count
-        viewCount = possiblePaths.find(count => count !== undefined && count !== null);
-
-        if (viewCount !== undefined && viewCount !== null) {
-            if (typeof viewCount === 'string') {
-                viewCount = parseViewCount(viewCount);
-            }
-            
-            res.json({
-                video_id: videoId,
-                views: viewCount,
-                success: true
-            });
-        } else {
-            console.log('No view count found for video:', videoId);
-            res.status(404).json({ 
-                error: 'View count not found',
-                success: false
-            });
-        }
-
-    } catch (error) {
-        console.error('Error fetching video views:', error);
-        res.status(500).json({ 
-            error: 'Failed to fetch view count',
-            message: error.message,
-            success: false
         });
     }
 });
