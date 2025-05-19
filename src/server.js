@@ -57,22 +57,38 @@ app.get('/api/video/:videoId', async (req, res) => {
         }
 
         console.log(`Fetching info for video: ${videoId}`);
-        const videoInfo = await yt.getInfo(videoId);
+        const videoInfo = await yt.getBasicInfo(videoId);
         
-        // Extract view count using the same path as src/server.js
-        const simplifiedInfo = {
-            video_id: videoInfo.basic_info.id,
-            title: videoInfo.basic_info.title,
-            views: videoInfo.basic_info.view_count
+        // Try multiple paths to get view count
+        let viewCount = null;
+        
+        // Check view_count object first
+        if (videoInfo?.view_count?.view_count?.text) {
+            const match = videoInfo.view_count.view_count.text.match(/[\d,]+/);
+            if (match) {
+                viewCount = parseInt(match[0].replace(/,/g, ''), 10);
+            }
+        }
+        
+        // Fallback to basic_info
+        if (!viewCount && videoInfo?.basic_info?.view_count) {
+            viewCount = videoInfo.basic_info.view_count;
+        }
+
+        // Fallback to video_details
+        if (!viewCount && videoInfo?.video_details?.view_count) {
+            viewCount = videoInfo.video_details.view_count;
+        }
+
+        const response = {
+            video_id: videoId,
+            title: videoInfo?.basic_info?.title || videoInfo?.video_details?.title,
+            views: viewCount,
+            success: true
         };
 
-        console.log('Video info:', {
-            id: simplifiedInfo.video_id,
-            title: simplifiedInfo.title,
-            views: simplifiedInfo.views
-        });
-
-        res.json(simplifiedInfo);
+        console.log('Video info:', response);
+        res.json(response);
 
     } catch (error) {
         console.error('Video error:', error);
@@ -154,33 +170,39 @@ app.get('/api/video/:videoId/debug', async (req, res) => {
 
         console.log(`Fetching full debug info for video: ${videoId}`);
         
-        // Get both basic and full info
+        // Get info using different methods
         const basicInfo = await yt.getBasicInfo(videoId);
         const fullInfo = await yt.getInfo(videoId);
+        const player = await yt.getPlayer(videoId);
         
         // Create debug response with all possible paths
         const debugResponse = {
             video_id: videoId,
-            basic_info_paths: {
-                basic_info_view_count: basicInfo?.basic_info?.view_count,
-                video_details_view_count: basicInfo?.video_details?.view_count,
-                page_data_view_count: basicInfo?.page_data?.view_count
+            basic_info: {
+                view_count: basicInfo?.basic_info?.view_count,
+                view_count_text: basicInfo?.basic_info?.view_count_text,
+                original_view_count: basicInfo?.basic_info?.original_view_count,
+                short_view_count: basicInfo?.basic_info?.short_view_count,
+                view_count_object: basicInfo?.view_count
             },
-            full_info_paths: {
-                basic_info_view_count: fullInfo?.basic_info?.view_count,
-                video_details_view_count: fullInfo?.video_details?.view_count,
-                page_data_view_count: fullInfo?.page_data?.view_count,
-                engagement_panels: fullInfo?.engagement_panels?.map(panel => ({
-                    type: panel.panel_type,
-                    content: panel.engagement_panel_content
-                }))
+            video_details: {
+                view_count: fullInfo?.video_details?.view_count,
+                view_count_text: fullInfo?.video_details?.view_count_text,
+                original_view_count: fullInfo?.video_details?.original_view_count
             },
-            playability_status: {
-                basic: basicInfo?.playability_status,
-                full: fullInfo?.playability_status
+            player_info: {
+                view_count: player?.view_count,
+                view_count_text: player?.view_count_text
             },
-            raw_basic_info: process.env.NODE_ENV === 'development' ? basicInfo : undefined,
-            raw_full_info: process.env.NODE_ENV === 'development' ? fullInfo : undefined
+            engagement_stats: {
+                view_count: fullInfo?.engagement_stats?.view_count,
+                view_count_text: fullInfo?.engagement_stats?.view_count_text
+            },
+            raw_data: {
+                basic_info: process.env.NODE_ENV === 'development' ? basicInfo : undefined,
+                full_info: process.env.NODE_ENV === 'development' ? fullInfo : undefined,
+                player: process.env.NODE_ENV === 'development' ? player : undefined
+            }
         };
 
         // Log the full response for server-side debugging
