@@ -21,28 +21,40 @@ async function initializeYouTube() {
         yt = await Innertube.create({
             cache: false,
             generate_session_locally: true,
+            // Use proper client configuration from docs
+            client: {
+                name: 'WEB',
+                version: '2.20240111.09.00',
+                api_key: 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+                api_version: 'v1',
+                screen_dpi: 1,
+                screen_width: 1920,
+                screen_height: 1080,
+                user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            },
             fetch: async (input, init) => {
                 try {
-                    // Create a new Request object
-                    const request = input instanceof Request ? input : new Request(input, init);
+                    // Handle both string URLs and Request objects
+                    const url = typeof input === 'string' ? input : input.url;
                     
-                    // Add timeout
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-                    // Create new request with our headers
-                    const newRequest = new Request(request, {
-                        signal: controller.signal,
+                    // Create options object
+                    const options = {
+                        ...init,
                         headers: {
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                             'Accept-Language': 'en-US,en;q=0.5',
-                            ...Object.fromEntries(request.headers.entries())
+                            ...(init?.headers || {})
                         }
-                    });
+                    };
+
+                    // Add timeout
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 10000);
+                    options.signal = controller.signal;
 
                     try {
-                        const response = await fetch(newRequest);
+                        const response = await fetch(url, options);
                         clearTimeout(timeoutId);
                         return response;
                     } catch (error) {
