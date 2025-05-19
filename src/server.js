@@ -170,39 +170,32 @@ app.get('/api/video/:videoId/debug', async (req, res) => {
 
         console.log(`Fetching full debug info for video: ${videoId}`);
         
-        // Get info using different methods
+        // Get info using available methods
         const basicInfo = await yt.getBasicInfo(videoId);
         const fullInfo = await yt.getInfo(videoId);
-        const player = await yt.getPlayer(videoId);
         
         // Create debug response with all possible paths
         const debugResponse = {
             video_id: videoId,
             basic_info: {
+                id: basicInfo?.basic_info?.id,
+                title: basicInfo?.basic_info?.title,
                 view_count: basicInfo?.basic_info?.view_count,
                 view_count_text: basicInfo?.basic_info?.view_count_text,
-                original_view_count: basicInfo?.basic_info?.original_view_count,
-                short_view_count: basicInfo?.basic_info?.short_view_count,
-                view_count_object: basicInfo?.view_count
+                description: basicInfo?.basic_info?.description,
+                raw_view_count: basicInfo?.view_count
             },
             video_details: {
+                id: fullInfo?.video_details?.id,
+                title: fullInfo?.video_details?.title,
                 view_count: fullInfo?.video_details?.view_count,
                 view_count_text: fullInfo?.video_details?.view_count_text,
-                original_view_count: fullInfo?.video_details?.original_view_count
+                description: fullInfo?.video_details?.description
             },
-            player_info: {
-                view_count: player?.view_count,
-                view_count_text: player?.view_count_text
-            },
-            engagement_stats: {
-                view_count: fullInfo?.engagement_stats?.view_count,
-                view_count_text: fullInfo?.engagement_stats?.view_count_text
-            },
-            raw_data: {
-                basic_info: process.env.NODE_ENV === 'development' ? basicInfo : undefined,
-                full_info: process.env.NODE_ENV === 'development' ? fullInfo : undefined,
-                player: process.env.NODE_ENV === 'development' ? player : undefined
-            }
+            raw_data: process.env.NODE_ENV === 'development' ? {
+                basic_info: basicInfo,
+                full_info: fullInfo
+            } : undefined
         };
 
         // Log the full response for server-side debugging
