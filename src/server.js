@@ -23,36 +23,39 @@ async function initializeYouTube() {
             generate_session_locally: true,
             fetch: async (input, init) => {
                 try {
-                    // Handle Request object
+                    // Handle Request object properly
+                    let url = input;
+                    let options = init || {};
+
                     if (input instanceof Request) {
-                        const originalRequest = input;
-                        init = {
-                            method: originalRequest.method,
-                            headers: originalRequest.headers,
-                            body: originalRequest.body,
-                            mode: originalRequest.mode,
-                            credentials: originalRequest.credentials,
+                        url = input.url;
+                        options = {
+                            method: input.method,
+                            headers: Object.fromEntries(input.headers.entries()),
+                            body: input.body,
+                            mode: input.mode,
+                            credentials: input.credentials,
                             ...init
                         };
-                        input = originalRequest.url;
                     }
 
-                    // Add timeout
+                    // Add timeout using AbortController
                     const controller = new AbortController();
                     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-                    // Add headers
-                    init = {
-                        ...init,
-                        signal: controller.signal,
-                        headers: {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                            ...(init?.headers || {})
-                        }
-                    };
-
                     try {
-                        const response = await fetch(input, init);
+                        // Make the request with proper headers
+                        const response = await globalThis.fetch(url, {
+                            ...options,
+                            signal: controller.signal,
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                                'Accept-Language': 'en-US,en;q=0.5',
+                                ...(options.headers || {})
+                            }
+                        });
+
                         clearTimeout(timeoutId);
                         return response;
                     } catch (error) {
@@ -189,47 +192,4 @@ app.get('/api/debug/:videoId', async (req, res) => {
         });
 
     } catch (error) {
-        console.error(`Debug error for ${req.params.videoId}:`, error);
-        res.status(500).json({ error: 'Debug failed', details: error.message });
-    }
-});
-
-// Error handling
-process.on('uncaughtException', (error) => {
-    console.error('Uncaught Exception:', error);
-});
-
-process.on('unhandledRejection', (error) => {
-    console.error('Unhandled Rejection:', error);
-});
-
-// Start server with retries
-function startServer(retries = 3) {
-    try {
-        const server = app.listen(port, () => {
-            console.log(`Server running on port ${port}`);
-        });
-
-        server.on('error', (error) => {
-            console.error('Server error:', error);
-            if (retries > 0) {
-                console.log(`Retrying server start (${retries} attempts left)...`);
-                setTimeout(() => startServer(retries - 1), 1000);
-            }
-        });
-    } catch (error) {
-        console.error('Failed to start server:', error);
-        if (retries > 0) {
-            console.log(`Retrying server start (${retries} attempts left)...`);
-            setTimeout(() => startServer(retries - 1), 1000);
-        }
-    }
-}
-
-// Initialize and start
-initializeYouTube()
-    .then(() => startServer())
-    .catch(error => {
-        console.error('Fatal error:', error);
-        process.exit(1);
-    }); 
+        console.error(`
