@@ -5,130 +5,181 @@ import cors from 'cors';
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Enable CORS
+// Enable CORS and JSON parsing
 app.use(cors());
 app.use(express.json());
 
 // Initialize YouTube client
 let yt = null;
 let ytInitialized = false;
+let initializationAttempts = 0;
+const MAX_INIT_ATTEMPTS = 3;
 
 async function initializeYouTube() {
     try {
+        console.log('Initializing YouTube client...');
         yt = await Innertube.create({
             cache: false,
-            generate_session_locally: true
+            generate_session_locally: true,
+            fetch: async (input, init) => {
+                const timeout = new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('Request timed out')), 10000);
+                });
+                const request = fetch(input, init);
+                return Promise.race([request, timeout]);
+            }
         });
         ytInitialized = true;
         console.log('YouTube client initialized successfully');
     } catch (error) {
         console.error('Failed to initialize YouTube client:', error);
+        if (++initializationAttempts < MAX_INIT_ATTEMPTS) {
+            console.log(`Retrying initialization (attempt ${initializationAttempts + 1}/${MAX_INIT_ATTEMPTS})...`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            return initializeYouTube();
+        }
         throw error;
     }
 }
 
-// Middleware to check if YouTube client is initialized
+// Middleware to check YouTube client
 const checkYouTubeClient = async (req, res, next) => {
     if (!ytInitialized) {
         try {
             await initializeYouTube();
         } catch (error) {
-            return res.status(500).json({ error: 'YouTube client not initialized' });
+            return res.status(503).json({ error: 'YouTube client unavailable', details: error.message });
         }
     }
     next();
 };
 
-// Apply the middleware
 app.use('/api/*', checkYouTubeClient);
 
 // Health check endpoint
 app.get('/', (req, res) => {
-    res.json({ status: 'View Count Update service is running' });
+    res.json({ 
+        status: 'View Count Update service is running',
+        youtube_client: ytInitialized ? 'initialized' : 'not initialized'
+    });
 });
 
-// Function to extract view count from various formats
+// Function to extract view count
 function extractViewCount(videoInfo) {
-    // Check for VideoViewCount type (most reliable)
-    if (videoInfo?.video_details?.view_count?.original_view_count) {
-        return parseInt(videoInfo.video_details.view_count.original_view_count, 10);
-    }
-
-    // Check for formatted view count
-    if (videoInfo?.video_details?.view_count?.view_count?.text) {
-        return parseInt(videoInfo.video_details.view_count.view_count.text.replace(/[^0-9]/g, ''), 10);
-    }
-
-    // Check for short view count
-    if (videoInfo?.video_details?.view_count?.extra_short_view_count?.text) {
-        const shortCount = videoInfo.video_details.view_count.extra_short_view_count.text;
-        // Convert formats like "1.6B" to numbers
-        if (shortCount.endsWith('B')) {
-            return Math.floor(parseFloat(shortCount.replace('B', '')) * 1000000000);
+    try {
+        // Get original view count
+        if (videoInfo?.video_details?.view_count?.original_view_count) {
+            return parseInt(videoInfo.video_details.view_count.original_view_count, 10);
         }
-        if (shortCount.endsWith('M')) {
-            return Math.floor(parseFloat(shortCount.replace('M', '')) * 1000000);
-        }
-        if (shortCount.endsWith('K')) {
-            return Math.floor(parseFloat(shortCount.replace('K', '')) * 1000);
-        }
-    }
 
+        // Get formatted view count
+        if (videoInfo?.video_details?.view_count?.view_count?.text) {
+            return parseInt(videoInfo.video_details.view_count.view_count.text.replace(/[^0-9]/g, ''), 10);
+        }
+
+        // Get short view count
+        if (videoInfo?.video_details?.view_count?.extra_short_view_count?.text) {
+            const shortCount = videoInfo.video_details.view_count.extra_short_view_count.text;
+            if (shortCount.endsWith('B')) {
+                return Math.floor(parseFloat(shortCount.replace('B', '')) * 1000000000);
+            }
+            if (shortCount.endsWith('M')) {
+                return Math.floor(parseFloat(shortCount.replace('M', '')) * 1000000);
+            }
+            if (shortCount.endsWith('K')) {
+                return Math.floor(parseFloat(shortCount.replace('K', '')) * 1000);
+            }
+        }
+    } catch (error) {
+        console.error('Error extracting view count:', error);
+    }
     return null;
 }
 
-// Simple view count endpoint
+// View count endpoint
 app.get('/api/views/:videoId', async (req, res) => {
     try {
         const videoId = req.params.videoId;
-        const videoInfo = await yt.getInfo(videoId);
+        console.log(`Fetching view count for video ${videoId}`);
         
+        const videoInfo = await yt.getInfo(videoId);
         const viewCount = extractViewCount(videoInfo);
         
         if (!viewCount) {
+            console.log(`No view count found for video ${videoId}`);
             return res.status(404).json({ error: 'View count not found' });
         }
 
+        console.log(`Successfully got view count for ${videoId}: ${viewCount}`);
         res.json({ views: viewCount });
 
     } catch (error) {
-        console.error('Error:', error);
-        res.status(500).json({ error: 'Failed to fetch view count' });
+        console.error(`Error fetching view count for ${req.params.videoId}:`, error);
+        res.status(500).json({ error: 'Failed to fetch view count', details: error.message });
     }
 });
 
-// Debug endpoint that only shows view count info
+// Debug endpoint
 app.get('/api/debug/:videoId', async (req, res) => {
     try {
         const videoId = req.params.videoId;
+        console.log(`Debug request for video ${videoId}`);
+        
         const videoInfo = await yt.getInfo(videoId);
-
-        // Only extract relevant view count paths
-        const viewPaths = {
-            original: videoInfo?.video_details?.view_count?.original_view_count,
-            formatted: videoInfo?.video_details?.view_count?.view_count?.text,
-            short: videoInfo?.video_details?.view_count?.short_view_count?.text,
-            extra_short: videoInfo?.video_details?.view_count?.extra_short_view_count?.text
-        };
-
+        const viewCount = extractViewCount(videoInfo);
+        
         res.json({
             video_id: videoId,
-            view_count: extractViewCount(videoInfo),
-            view_count_paths: viewPaths
+            view_count: viewCount,
+            view_count_paths: {
+                original: videoInfo?.video_details?.view_count?.original_view_count,
+                formatted: videoInfo?.video_details?.view_count?.view_count?.text,
+                extra_short: videoInfo?.video_details?.view_count?.extra_short_view_count?.text
+            }
         });
 
     } catch (error) {
-        console.error('Debug error:', error);
-        res.status(500).json({ error: 'Failed to fetch debug info' });
+        console.error(`Debug error for ${req.params.videoId}:`, error);
+        res.status(500).json({ error: 'Debug failed', details: error.message });
     }
 });
 
-// Start server
-initializeYouTube().then(() => {
-    app.listen(port, () => {
-        console.log(`Server running on port ${port}`);
-    });
-}).catch(error => {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-}); 
+// Error handling
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (error) => {
+    console.error('Unhandled Rejection:', error);
+});
+
+// Start server with retries
+function startServer(retries = 3) {
+    try {
+        const server = app.listen(port, () => {
+            console.log(`Server running on port ${port}`);
+        });
+
+        server.on('error', (error) => {
+            console.error('Server error:', error);
+            if (retries > 0) {
+                console.log(`Retrying server start (${retries} attempts left)...`);
+                setTimeout(() => startServer(retries - 1), 1000);
+            }
+        });
+    } catch (error) {
+        console.error('Failed to start server:', error);
+        if (retries > 0) {
+            console.log(`Retrying server start (${retries} attempts left)...`);
+            setTimeout(() => startServer(retries - 1), 1000);
+        }
+    }
+}
+
+// Initialize and start
+initializeYouTube()
+    .then(() => startServer())
+    .catch(error => {
+        console.error('Fatal error:', error);
+        process.exit(1);
+    }); 
