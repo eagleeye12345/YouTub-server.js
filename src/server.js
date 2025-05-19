@@ -192,4 +192,47 @@ app.get('/api/debug/:videoId', async (req, res) => {
         });
 
     } catch (error) {
-        console.error(`
+        console.error(`Debug error for ${req.params.videoId}:`, error);
+        res.status(500).json({ error: 'Debug failed', details: error.message });
+    }
+});
+
+// Error handling
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (error) => {
+    console.error('Unhandled Rejection:', error);
+});
+
+// Start server with retries
+function startServer(retries = 3) {
+    try {
+        const server = app.listen(port, () => {
+            console.log(`Server running on port ${port}`);
+        });
+
+        server.on('error', (error) => {
+            console.error('Server error:', error);
+            if (retries > 0) {
+                console.log(`Retrying server start (${retries} attempts left)...`);
+                setTimeout(() => startServer(retries - 1), 1000);
+            }
+        });
+    } catch (error) {
+        console.error('Failed to start server:', error);
+        if (retries > 0) {
+            console.log(`Retrying server start (${retries} attempts left)...`);
+            setTimeout(() => startServer(retries - 1), 1000);
+        }
+    }
+}
+
+// Initialize and start
+initializeYouTube()
+    .then(() => startServer())
+    .catch(error => {
+        console.error('Fatal error:', error);
+        process.exit(1);
+    });
