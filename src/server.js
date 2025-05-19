@@ -52,10 +52,10 @@ app.get('/api/video/:videoId', async (req, res) => {
     try {
         const videoInfo = await yt.getInfo(req.params.videoId);
         
-        // Get view count from the correct path
+        // Get view count from primary_info path
         let viewCount = null;
-        if (videoInfo?.view_count?.view_count?.text) {
-            const match = videoInfo.view_count.view_count.text.match(/[\d,]+/);
+        if (videoInfo?.primary_info?.view_count?.view_count?.text) {
+            const match = videoInfo.primary_info.view_count.view_count.text.match(/[\d,]+/);
             if (match) {
                 viewCount = parseInt(match[0].replace(/,/g, ''), 10);
             }
@@ -94,8 +94,8 @@ app.post('/api/videos/views/batch', async (req, res) => {
                 try {
                     const videoInfo = await yt.getInfo(videoId);
                     let viewCount = null;
-                    if (videoInfo?.view_count?.view_count?.text) {
-                        const match = videoInfo.view_count.view_count.text.match(/[\d,]+/);
+                    if (videoInfo?.primary_info?.view_count?.view_count?.text) {
+                        const match = videoInfo.primary_info.view_count.view_count.text.match(/[\d,]+/);
                         if (match) {
                             viewCount = parseInt(match[0].replace(/,/g, ''), 10);
                         }
@@ -155,28 +155,19 @@ app.get('/api/video/:videoId/debug', async (req, res) => {
         const debugResponse = {
             video_id: videoId,
             basic_info: videoInfo?.basic_info,
+            primary_info: {
+                title: videoInfo?.primary_info?.title?.text,
+                view_count: videoInfo?.primary_info?.view_count,
+                published: videoInfo?.primary_info?.published?.text,
+                relative_date: videoInfo?.primary_info?.relative_date?.text
+            },
             video_details: videoInfo?.video_details,
-            view_count_object: videoInfo?.view_count,
             engagement_panels: videoInfo?.engagement_panels,
-            // Include all top-level keys to see full structure
             available_data_paths: Object.keys(videoInfo || {}),
-            // Include complete raw response
             raw_response: videoInfo
         };
 
-        // Log the full response for server-side debugging
         console.log('Complete debug info:', JSON.stringify(debugResponse, null, 2));
-
-        // Add this right after getting videoInfo
-        console.log('Video Info Structure:', {
-            has_basic_info: !!videoInfo?.basic_info,
-            has_video_details: !!videoInfo?.video_details,
-            has_view_count: !!videoInfo?.view_count,
-            top_level_keys: Object.keys(videoInfo || {}),
-            basic_info_keys: Object.keys(videoInfo?.basic_info || {}),
-            video_details_keys: Object.keys(videoInfo?.video_details || {})
-        });
-
         res.json(debugResponse);
 
     } catch (error) {
