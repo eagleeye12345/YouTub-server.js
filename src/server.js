@@ -151,31 +151,25 @@ app.get('/api/video/:videoId/debug', async (req, res) => {
         console.log(`Fetching info for video: ${videoId}`);
         const videoInfo = await yt.getInfo(videoId);
         
-        // Show complete raw response for debugging
+        // Only show view count related info
         const debugResponse = {
             video_id: videoId,
-            basic_info: videoInfo?.basic_info,
-            primary_info: {
-                title: videoInfo?.primary_info?.title?.text,
-                view_count: videoInfo?.primary_info?.view_count,
-                published: videoInfo?.primary_info?.published?.text,
-                relative_date: videoInfo?.primary_info?.relative_date?.text
-            },
-            video_details: videoInfo?.video_details,
-            engagement_panels: videoInfo?.engagement_panels,
-            available_data_paths: Object.keys(videoInfo || {}),
-            raw_response: videoInfo
+            view_count_info: {
+                original_view_count: videoInfo?.primary_info?.view_count?.original_view_count,
+                view_count_text: videoInfo?.primary_info?.view_count?.view_count?.text,
+                short_view_count: videoInfo?.primary_info?.view_count?.short_view_count?.text,
+                extra_short_view_count: videoInfo?.primary_info?.view_count?.extra_short_view_count?.text
+            }
         };
 
-        console.log('Complete debug info:', JSON.stringify(debugResponse, null, 2));
+        console.log('View count debug info:', JSON.stringify(debugResponse, null, 2));
         res.json(debugResponse);
 
     } catch (error) {
         console.error('Error fetching video debug info:', error);
         res.status(500).json({ 
             error: 'Failed to fetch video info',
-            message: error.message,
-            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            message: error.message
         });
     }
 });
