@@ -64,36 +64,72 @@ app.get('/', (req, res) => {
     });
 });
 
-// Function to extract view count
+// Function to extract view count from various formats
 function extractViewCount(videoInfo) {
     try {
-        // Get original view count
-        if (videoInfo?.video_details?.view_count?.original_view_count) {
-            return parseInt(videoInfo.video_details.view_count.original_view_count, 10);
+        // Check primary_info path (most reliable)
+        if (videoInfo?.primary_info?.view_count?.view_count?.text) {
+            return parseInt(videoInfo.primary_info.view_count.view_count.text.replace(/[^0-9]/g, ''), 10);
         }
 
-        // Get formatted view count
-        if (videoInfo?.video_details?.view_count?.view_count?.text) {
-            return parseInt(videoInfo.video_details.view_count.view_count.text.replace(/[^0-9]/g, ''), 10);
+        // Check primary_info original count
+        if (videoInfo?.primary_info?.view_count?.original_view_count) {
+            return parseInt(videoInfo.primary_info.view_count.original_view_count, 10);
         }
 
-        // Get short view count
-        if (videoInfo?.video_details?.view_count?.extra_short_view_count?.text) {
-            const shortCount = videoInfo.video_details.view_count.extra_short_view_count.text;
-            if (shortCount.endsWith('B')) {
-                return Math.floor(parseFloat(shortCount.replace('B', '')) * 1000000000);
-            }
-            if (shortCount.endsWith('M')) {
-                return Math.floor(parseFloat(shortCount.replace('M', '')) * 1000000);
-            }
-            if (shortCount.endsWith('K')) {
-                return Math.floor(parseFloat(shortCount.replace('K', '')) * 1000);
+        // Check basic_info path
+        if (videoInfo?.basic_info?.view_count) {
+            return parseInt(videoInfo.basic_info.view_count.toString().replace(/[^0-9]/g, ''), 10);
+        }
+
+        // Check video_details path
+        if (videoInfo?.video_details?.view_count_text) {
+            const match = videoInfo.video_details.view_count_text.match(/([0-9,]+)\s+views/);
+            if (match) {
+                return parseInt(match[1].replace(/,/g, ''), 10);
             }
         }
+
+        // Check engagement panels
+        if (videoInfo?.engagement_panels) {
+            for (const panel of videoInfo.engagement_panels) {
+                if (panel.engagement_panel_content?.content?.video_description_content?.runs) {
+                    for (const run of panel.engagement_panel_content.content.video_description_content.runs) {
+                        if (run.text && run.text.includes('views')) {
+                            const match = run.text.match(/([0-9,]+)\s+views/);
+                            if (match) {
+                                return parseInt(match[1].replace(/,/g, ''), 10);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check overlay metadata
+        if (videoInfo?.overlay_metadata?.secondary_text?.text) {
+            const viewText = videoInfo.overlay_metadata.secondary_text.text;
+            const match = viewText.match(/(\d+(?:\.\d+)?[KMB]?)\s+views/i);
+            if (match) {
+                const viewCount = match[1];
+                if (viewCount.endsWith('B')) {
+                    return Math.floor(parseFloat(viewCount.replace('B', '')) * 1000000000);
+                }
+                if (viewCount.endsWith('M')) {
+                    return Math.floor(parseFloat(viewCount.replace('M', '')) * 1000000);
+                }
+                if (viewCount.endsWith('K')) {
+                    return Math.floor(parseFloat(viewCount.replace('K', '')) * 1000);
+                }
+                return parseInt(viewCount, 10);
+            }
+        }
+
+        return null;
     } catch (error) {
         console.error('Error extracting view count:', error);
+        return null;
     }
-    return null;
 }
 
 // View count endpoint
@@ -119,7 +155,7 @@ app.get('/api/views/:videoId', async (req, res) => {
     }
 });
 
-// Debug endpoint
+// Debug endpoint that shows all possible view count paths
 app.get('/api/debug/:videoId', async (req, res) => {
     try {
         const videoId = req.params.videoId;
@@ -128,14 +164,26 @@ app.get('/api/debug/:videoId', async (req, res) => {
         const videoInfo = await yt.getInfo(videoId);
         const viewCount = extractViewCount(videoInfo);
         
+        // Show all possible paths where view count might be found
+        const viewPaths = {
+            primary_info: {
+                formatted: videoInfo?.primary_info?.view_count?.view_count?.text,
+                original: videoInfo?.primary_info?.view_count?.original_view_count
+            },
+            basic_info: videoInfo?.basic_info?.view_count,
+            video_details: videoInfo?.video_details?.view_count_text,
+            engagement_panels: videoInfo?.engagement_panels?.map(panel => 
+                panel.engagement_panel_content?.content?.video_description_content?.runs
+                ?.find(run => run.text?.includes('views'))?.text
+            ).filter(Boolean),
+            overlay_metadata: videoInfo?.overlay_metadata?.secondary_text?.text,
+            final_view_count: viewCount
+        };
+
         res.json({
             video_id: videoId,
             view_count: viewCount,
-            view_count_paths: {
-                original: videoInfo?.video_details?.view_count?.original_view_count,
-                formatted: videoInfo?.video_details?.view_count?.view_count?.text,
-                extra_short: videoInfo?.video_details?.view_count?.extra_short_view_count?.text
-            }
+            view_count_paths: viewPaths
         });
 
     } catch (error) {
