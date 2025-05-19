@@ -47,14 +47,24 @@ app.get('/', (req, res) => {
     res.json({ status: 'View Count Update service is running' });
 });
 
-// Get video info endpoint - based on the working src/server.js implementation
+// Get video info endpoint
 app.get('/api/video/:videoId', async (req, res) => {
     try {
         const videoInfo = await yt.getInfo(req.params.videoId);
+        
+        // Get view count from the correct path
+        let viewCount = null;
+        if (videoInfo?.view_count?.view_count?.text) {
+            const match = videoInfo.view_count.view_count.text.match(/[\d,]+/);
+            if (match) {
+                viewCount = parseInt(match[0].replace(/,/g, ''), 10);
+            }
+        }
+
         const simplifiedInfo = {
-            video_id: videoInfo.basic_info.id,
+            video_id: videoInfo.basic_info.id || req.params.videoId,
             title: videoInfo.basic_info.title,
-            views: videoInfo.basic_info.view_count
+            views: viewCount
         };
         res.json(simplifiedInfo);
     } catch (error) {
@@ -83,7 +93,13 @@ app.post('/api/videos/views/batch', async (req, res) => {
             const batchPromises = batch.map(async (videoId) => {
                 try {
                     const videoInfo = await yt.getInfo(videoId);
-                    const viewCount = videoInfo?.basic_info?.view_count;
+                    let viewCount = null;
+                    if (videoInfo?.view_count?.view_count?.text) {
+                        const match = videoInfo.view_count.view_count.text.match(/[\d,]+/);
+                        if (match) {
+                            viewCount = parseInt(match[0].replace(/,/g, ''), 10);
+                        }
+                    }
 
                     return {
                         video_id: videoId,
@@ -123,7 +139,7 @@ app.post('/api/videos/views/batch', async (req, res) => {
     }
 });
 
-// Debug endpoint to show all video info
+// Debug endpoint
 app.get('/api/video/:videoId/debug', async (req, res) => {
     try {
         const videoId = req.params.videoId;
@@ -135,13 +151,22 @@ app.get('/api/video/:videoId/debug', async (req, res) => {
         console.log(`Fetching info for video: ${videoId}`);
         const videoInfo = await yt.getInfo(videoId);
         
-        // Create debug response showing all available data
+        // Extract view count from the correct path
+        let viewCount = null;
+        if (videoInfo?.view_count?.view_count?.text) {
+            const match = videoInfo.view_count.view_count.text.match(/[\d,]+/);
+            if (match) {
+                viewCount = parseInt(match[0].replace(/,/g, ''), 10);
+            }
+        }
+
         const debugResponse = {
             video_id: videoId,
             info: {
                 id: videoInfo?.basic_info?.id,
                 title: videoInfo?.basic_info?.title,
-                views: videoInfo?.basic_info?.view_count,
+                views: viewCount,
+                view_count_raw: videoInfo?.view_count?.view_count?.text,
                 description: videoInfo?.basic_info?.description,
                 channel: videoInfo?.basic_info?.channel,
                 likes: videoInfo?.basic_info?.like_count,
