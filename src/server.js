@@ -49,19 +49,29 @@ app.get('/', (req, res) => {
 
 // Function to extract view count from various formats
 function extractViewCount(videoInfo) {
-    // Check primary_info path (most reliable)
-    if (videoInfo?.primary_info?.view_count?.text) {
-        return parseInt(videoInfo.primary_info.view_count.text.replace(/[^0-9]/g, ''), 10);
-    }
-    
-    // Check video_details path
-    if (videoInfo?.video_details?.view_count?.text) {
-        return parseInt(videoInfo.video_details.view_count.text.replace(/[^0-9]/g, ''), 10);
+    // Check for VideoViewCount type (most reliable)
+    if (videoInfo?.video_details?.view_count?.original_view_count) {
+        return parseInt(videoInfo.video_details.view_count.original_view_count, 10);
     }
 
-    // Check basic_info path
-    if (videoInfo?.basic_info?.view_count?.text) {
-        return parseInt(videoInfo.basic_info.view_count.text.replace(/[^0-9]/g, ''), 10);
+    // Check for formatted view count
+    if (videoInfo?.video_details?.view_count?.view_count?.text) {
+        return parseInt(videoInfo.video_details.view_count.view_count.text.replace(/[^0-9]/g, ''), 10);
+    }
+
+    // Check for short view count
+    if (videoInfo?.video_details?.view_count?.extra_short_view_count?.text) {
+        const shortCount = videoInfo.video_details.view_count.extra_short_view_count.text;
+        // Convert formats like "1.6B" to numbers
+        if (shortCount.endsWith('B')) {
+            return Math.floor(parseFloat(shortCount.replace('B', '')) * 1000000000);
+        }
+        if (shortCount.endsWith('M')) {
+            return Math.floor(parseFloat(shortCount.replace('M', '')) * 1000000);
+        }
+        if (shortCount.endsWith('K')) {
+            return Math.floor(parseFloat(shortCount.replace('K', '')) * 1000);
+        }
     }
 
     return null;
@@ -95,9 +105,10 @@ app.get('/api/debug/:videoId', async (req, res) => {
 
         // Only extract relevant view count paths
         const viewPaths = {
-            primary_info: videoInfo?.primary_info?.view_count?.text,
-            video_details: videoInfo?.video_details?.view_count?.text,
-            basic_info: videoInfo?.basic_info?.view_count?.text
+            original: videoInfo?.video_details?.view_count?.original_view_count,
+            formatted: videoInfo?.video_details?.view_count?.view_count?.text,
+            short: videoInfo?.video_details?.view_count?.short_view_count?.text,
+            extra_short: videoInfo?.video_details?.view_count?.extra_short_view_count?.text
         };
 
         res.json({
