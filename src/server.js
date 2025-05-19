@@ -50,52 +50,16 @@ app.get('/', (req, res) => {
 // Get video info endpoint - based on the working src/server.js implementation
 app.get('/api/video/:videoId', async (req, res) => {
     try {
-        const videoId = req.params.videoId;
-        
-        if (!videoId || videoId.length < 5) {
-            return res.status(400).json({ error: 'Invalid video ID' });
-        }
-
-        console.log(`Fetching info for video: ${videoId}`);
-        const videoInfo = await yt.getBasicInfo(videoId);
-        
-        // Try multiple paths to get view count
-        let viewCount = null;
-        
-        // Check view_count object first
-        if (videoInfo?.view_count?.view_count?.text) {
-            const match = videoInfo.view_count.view_count.text.match(/[\d,]+/);
-            if (match) {
-                viewCount = parseInt(match[0].replace(/,/g, ''), 10);
-            }
-        }
-        
-        // Fallback to basic_info
-        if (!viewCount && videoInfo?.basic_info?.view_count) {
-            viewCount = videoInfo.basic_info.view_count;
-        }
-
-        // Fallback to video_details
-        if (!viewCount && videoInfo?.video_details?.view_count) {
-            viewCount = videoInfo.video_details.view_count;
-        }
-
-        const response = {
-            video_id: videoId,
-            title: videoInfo?.basic_info?.title || videoInfo?.video_details?.title,
-            views: viewCount,
-            success: true
+        const videoInfo = await yt.getInfo(req.params.videoId);
+        const simplifiedInfo = {
+            video_id: videoInfo.basic_info.id,
+            title: videoInfo.basic_info.title,
+            views: videoInfo.basic_info.view_count
         };
-
-        console.log('Video info:', response);
-        res.json(response);
-
+        res.json(simplifiedInfo);
     } catch (error) {
         console.error('Video error:', error);
-        res.status(500).json({ 
-            error: 'Failed to fetch video info',
-            message: error.message 
-        });
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -168,39 +132,26 @@ app.get('/api/video/:videoId/debug', async (req, res) => {
             return res.status(400).json({ error: 'Invalid video ID' });
         }
 
-        console.log(`Fetching full debug info for video: ${videoId}`);
+        console.log(`Fetching info for video: ${videoId}`);
+        const videoInfo = await yt.getInfo(videoId);
         
-        // Get info using available methods
-        const basicInfo = await yt.getBasicInfo(videoId);
-        const fullInfo = await yt.getInfo(videoId);
-        
-        // Create debug response with all possible paths
+        // Create debug response showing all available data
         const debugResponse = {
             video_id: videoId,
-            basic_info: {
-                id: basicInfo?.basic_info?.id,
-                title: basicInfo?.basic_info?.title,
-                view_count: basicInfo?.basic_info?.view_count,
-                view_count_text: basicInfo?.basic_info?.view_count_text,
-                description: basicInfo?.basic_info?.description,
-                raw_view_count: basicInfo?.view_count
+            info: {
+                id: videoInfo?.basic_info?.id,
+                title: videoInfo?.basic_info?.title,
+                views: videoInfo?.basic_info?.view_count,
+                description: videoInfo?.basic_info?.description,
+                channel: videoInfo?.basic_info?.channel,
+                likes: videoInfo?.basic_info?.like_count,
+                dislikes: videoInfo?.basic_info?.dislike_count,
+                is_live: videoInfo?.basic_info?.is_live
             },
-            video_details: {
-                id: fullInfo?.video_details?.id,
-                title: fullInfo?.video_details?.title,
-                view_count: fullInfo?.video_details?.view_count,
-                view_count_text: fullInfo?.video_details?.view_count_text,
-                description: fullInfo?.video_details?.description
-            },
-            raw_data: process.env.NODE_ENV === 'development' ? {
-                basic_info: basicInfo,
-                full_info: fullInfo
-            } : undefined
+            raw_info: process.env.NODE_ENV === 'development' ? videoInfo : undefined
         };
 
-        // Log the full response for server-side debugging
         console.log('Debug info:', JSON.stringify(debugResponse, null, 2));
-
         res.json(debugResponse);
 
     } catch (error) {
