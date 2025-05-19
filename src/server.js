@@ -151,32 +151,32 @@ app.get('/api/video/:videoId/debug', async (req, res) => {
         console.log(`Fetching info for video: ${videoId}`);
         const videoInfo = await yt.getInfo(videoId);
         
-        // Extract view count from the correct path
-        let viewCount = null;
-        if (videoInfo?.view_count?.view_count?.text) {
-            const match = videoInfo.view_count.view_count.text.match(/[\d,]+/);
-            if (match) {
-                viewCount = parseInt(match[0].replace(/,/g, ''), 10);
-            }
-        }
-
+        // Show complete raw response for debugging
         const debugResponse = {
             video_id: videoId,
-            info: {
-                id: videoInfo?.basic_info?.id,
-                title: videoInfo?.basic_info?.title,
-                views: viewCount,
-                view_count_raw: videoInfo?.view_count?.view_count?.text,
-                description: videoInfo?.basic_info?.description,
-                channel: videoInfo?.basic_info?.channel,
-                likes: videoInfo?.basic_info?.like_count,
-                dislikes: videoInfo?.basic_info?.dislike_count,
-                is_live: videoInfo?.basic_info?.is_live
-            },
-            raw_info: process.env.NODE_ENV === 'development' ? videoInfo : undefined
+            basic_info: videoInfo?.basic_info,
+            video_details: videoInfo?.video_details,
+            view_count_object: videoInfo?.view_count,
+            engagement_panels: videoInfo?.engagement_panels,
+            // Include all top-level keys to see full structure
+            available_data_paths: Object.keys(videoInfo || {}),
+            // Include complete raw response
+            raw_response: videoInfo
         };
 
-        console.log('Debug info:', JSON.stringify(debugResponse, null, 2));
+        // Log the full response for server-side debugging
+        console.log('Complete debug info:', JSON.stringify(debugResponse, null, 2));
+
+        // Add this right after getting videoInfo
+        console.log('Video Info Structure:', {
+            has_basic_info: !!videoInfo?.basic_info,
+            has_video_details: !!videoInfo?.video_details,
+            has_view_count: !!videoInfo?.view_count,
+            top_level_keys: Object.keys(videoInfo || {}),
+            basic_info_keys: Object.keys(videoInfo?.basic_info || {}),
+            video_details_keys: Object.keys(videoInfo?.video_details || {})
+        });
+
         res.json(debugResponse);
 
     } catch (error) {
