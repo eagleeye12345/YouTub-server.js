@@ -228,7 +228,62 @@ function parseViewCount(viewCount) {
     return parseInt(viewCount, 10) || 0;
 }
 
-// Simple endpoint to get just video views
+// Debug endpoint to show all video info
+app.get('/api/video/:videoId/debug', async (req, res) => {
+    try {
+        const videoId = req.params.videoId;
+        
+        if (!videoId || videoId.length < 5) {
+            return res.status(400).json({ error: 'Invalid video ID' });
+        }
+
+        console.log(`Fetching full debug info for video: ${videoId}`);
+        
+        // Get both basic and full info
+        const basicInfo = await yt.getBasicInfo(videoId);
+        const fullInfo = await yt.getInfo(videoId);
+        
+        // Create debug response with all possible paths
+        const debugResponse = {
+            video_id: videoId,
+            basic_info_paths: {
+                basic_info_view_count: basicInfo?.basic_info?.view_count,
+                video_details_view_count: basicInfo?.video_details?.view_count,
+                page_data_view_count: basicInfo?.page_data?.view_count
+            },
+            full_info_paths: {
+                basic_info_view_count: fullInfo?.basic_info?.view_count,
+                video_details_view_count: fullInfo?.video_details?.view_count,
+                page_data_view_count: fullInfo?.page_data?.view_count,
+                engagement_panels: fullInfo?.engagement_panels?.map(panel => ({
+                    type: panel.panel_type,
+                    content: panel.engagement_panel_content
+                }))
+            },
+            playability_status: {
+                basic: basicInfo?.playability_status,
+                full: fullInfo?.playability_status
+            },
+            raw_basic_info: process.env.NODE_ENV === 'development' ? basicInfo : undefined,
+            raw_full_info: process.env.NODE_ENV === 'development' ? fullInfo : undefined
+        };
+
+        // Log the full response for server-side debugging
+        console.log('Debug info:', JSON.stringify(debugResponse, null, 2));
+
+        res.json(debugResponse);
+
+    } catch (error) {
+        console.error('Error fetching video debug info:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch video info',
+            message: error.message,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+});
+
+// Also update your existing view count endpoint to use both methods
 app.get('/api/video/:videoId', async (req, res) => {
     try {
         const videoId = req.params.videoId;
@@ -238,41 +293,41 @@ app.get('/api/video/:videoId', async (req, res) => {
         }
 
         console.log(`Fetching view count for video: ${videoId}`);
-        const videoInfo = await yt.getInfo(videoId);
-
-        // Try multiple paths to get the view count
+        
+        // Try both methods to get view count
+        const basicInfo = await yt.getBasicInfo(videoId);
+        const fullInfo = await yt.getInfo(videoId);
+        
         let viewCount = null;
+        
+        // Try all possible paths to find view count
+        const possiblePaths = [
+            basicInfo?.basic_info?.view_count,
+            basicInfo?.video_details?.view_count,
+            basicInfo?.page_data?.view_count,
+            fullInfo?.basic_info?.view_count,
+            fullInfo?.video_details?.view_count,
+            fullInfo?.page_data?.view_count
+        ];
 
-        // Method 1: Check basic_info
-        if (videoInfo?.basic_info?.view_count !== undefined) {
-            viewCount = videoInfo.basic_info.view_count;
-            console.log('Found view count in basic_info:', viewCount);
-        }
-        // Method 2: Check video_details
-        else if (videoInfo?.video_details?.view_count) {
-            viewCount = videoInfo.video_details.view_count;
-            console.log('Found view count in video_details:', viewCount);
-        }
-        // Method 3: Check engagement panels
-        else if (videoInfo?.engagement_panels) {
-            for (const panel of videoInfo.engagement_panels) {
-                if (panel.engagement_panel_content?.content?.video_description_content?.runs) {
-                    for (const run of panel.engagement_panel_content.content.video_description_content.runs) {
-                        if (run.text && run.text.includes('views')) {
-                            const match = run.text.match(/([0-9,]+)\s+views/);
-                            if (match) {
-                                viewCount = match[1].replace(/,/g, '');
-                                console.log('Found view count in engagement panel:', viewCount);
-                                break;
-                            }
-                        }
-                    }
-                }
+        // Log all possible paths for debugging
+        console.log('Possible view count paths:', {
+            basic_info: {
+                basic_info: basicInfo?.basic_info?.view_count,
+                video_details: basicInfo?.video_details?.view_count,
+                page_data: basicInfo?.page_data?.view_count
+            },
+            full_info: {
+                basic_info: fullInfo?.basic_info?.view_count,
+                video_details: fullInfo?.video_details?.view_count,
+                page_data: fullInfo?.page_data?.view_count
             }
-        }
+        });
 
-        // If view count is found, convert it if it's a string
-        if (viewCount !== null) {
+        // Find first valid view count
+        viewCount = possiblePaths.find(count => count !== undefined && count !== null);
+
+        if (viewCount !== undefined && viewCount !== null) {
             if (typeof viewCount === 'string') {
                 viewCount = parseViewCount(viewCount);
             }
